@@ -319,7 +319,7 @@ void llama_model_gemma4_assistant::load_arch_tensors(llama_model_loader &) {
 
         if (!hparams.is_swa(i)) {
             // Full-attention layer reuses the Gemma 4 partial-RoPE shim.
-            layer.rope_freqs = create_tensor(tn(LLM_TENSOR_ROPE_FREQS, "weight", i), {n_embd_head/2}, rope_freqs_flag);
+            layer.rope_freqs = create_tensor(tn(LLM_TENSOR_ROPE_FREQS, "weight", i), {n_embd_head/2}, TENSOR_NOT_REQUIRED | rope_freqs_flag);
             rope_freqs_flag = TENSOR_DUPLICATED;
         }
 
