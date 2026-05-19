@@ -136,6 +136,13 @@ struct llama_context {
                        ggml_status & ret,
                              bool   apply_mctx = true);
 
+    bool ensure_sched_mtp();
+
+    llm_graph_result * process_ubatch_mtp(
+                const llama_ubatch & ubatch,
+            llama_memory_context_i * mctx,
+                       ggml_status & ret);
+
     int32_t decode_mtp(
             llama_seq_id seq_id,
             llama_pos attn_pos,
@@ -262,6 +269,13 @@ private:
             const llama_memory_context_i * mctx,
                           llm_graph_type   gtype) const;
 
+    llm_graph_params graph_params_mtp(
+                        llm_graph_result * res,
+                      const llama_ubatch & ubatch,
+            const llama_memory_context_i * mctx) const;
+
+    ggml_status graph_compute_mtp(ggml_cgraph * gf);
+
     llm_graph_cb graph_get_cb() const;
 
     // TODO: read/write lora adapters and cvec
@@ -336,11 +350,19 @@ private:
     std::vector<swap_info> output_swaps;
 
     ggml_backend_sched_ptr sched;
+    ggml_backend_sched_ptr sched_mtp;
+
+    uint64_t mtp_sched_reserve_count = 0;
+    uint64_t mtp_sched_reset_count   = 0;
+    uint64_t mtp_graph_build_count   = 0;
+    uint64_t mtp_graph_alloc_count   = 0;
+    uint64_t mtp_graph_reuse_count   = 0;
 
     bool sched_need_reserve = true;
 
     ggml_backend_t backend_cpu = nullptr;
     std::vector<ggml_backend_ptr> backends;
+    std::vector<ggml_backend_ptr> backends_mtp_extra;
 
     // training
     ggml_opt_context_t opt_ctx = nullptr;
@@ -360,6 +382,7 @@ private:
 
     llm_graph_result_ptr gf_res_prev;
     llm_graph_result_ptr gf_res_reserve;
+    llm_graph_result_ptr gf_res_prev_mtp;
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;

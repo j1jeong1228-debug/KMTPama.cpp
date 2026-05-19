@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -1322,6 +1323,172 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     return res;
 }
 
+bool llama_context::ensure_sched_mtp() {
+    if (sched_mtp) {
+        return true;
+    }
+    if (!model.mtp_assistant) {
+        return false;
+    }
+
+    const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+    const size_t max_nodes = this->graph_max_nodes(n_tokens);
+
+    std::vector<ggml_backend_t> sched_backend_ptrs = backend_ptrs;
+    std::vector<ggml_backend_buffer_type_t> sched_backend_buft = backend_buft;
+
+    const bool trace_mtp_sched = std::getenv("LLAMA_GEMMA4_MTP_SCHED_TRACE") != nullptr;
+    if (trace_mtp_sched) {
+        LLAMA_LOG_WARN("%s: mtp scheduler initial backend_count=%zu assistant_device_count=%zu split_mode=%d\n",
+                __func__, sched_backend_ptrs.size(), model.mtp_assistant->devices.size(), (int) model.split_mode());
+        for (size_t i = 0; i < sched_backend_ptrs.size(); ++i) {
+            LLAMA_LOG_WARN("%s: mtp scheduler backend[%zu]=%s buft=%s\n",
+                    __func__, i,
+                    sched_backend_ptrs[i] ? ggml_backend_name(sched_backend_ptrs[i]) : "null",
+                    sched_backend_buft[i] ? ggml_backend_buft_name(sched_backend_buft[i]) : "null");
+        }
+    }
+
+    gf_res_prev_mtp.reset(new llm_graph_result(max_nodes));
+    sched_mtp.reset(ggml_backend_sched_new(
+            sched_backend_ptrs.data(), sched_backend_buft.data(), sched_backend_ptrs.size(),
+            max_nodes, /*pipeline_parallel*/ false, cparams.op_offload));
+
+    if (!sched_mtp) {
+        LLAMA_LOG_ERROR("%s: ggml_backend_sched_new failed for Gemma4 MTP scheduler\n", __func__);
+        gf_res_prev_mtp.reset();
+        return false;
+    }
+
+    auto * memory_iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get());
+    if (!memory_iswa) {
+        LLAMA_LOG_ERROR("%s: attached MTP requires ISWA KV cache\n", __func__);
+        sched_mtp.reset();
+        gf_res_prev_mtp.reset();
+        return false;
+    }
+
+    auto mctx = memory_iswa->init_full();
+    if (!mctx) {
+        LLAMA_LOG_ERROR("%s: failed to initialize full memory context for Gemma4 MTP reserve\n", __func__);
+        sched_mtp.reset();
+        gf_res_prev_mtp.reset();
+        return false;
+    }
+
+    const uint32_t n_embd_backbone = model.mtp_assistant->hparams.n_embd_backbone;
+    auto data = std::make_shared<llama_ubatch::data_t>();
+    data->token.resize(1);
+    data->embd.resize(n_embd_backbone);
+    data->pos.resize(1);
+    data->n_seq_id.resize(1);
+    data->seq_id.resize(1);
+    data->seq_id_data.resize(1);
+    data->seq_id_unq.push_back(0);
+    data->seq_idx.assign(LLAMA_MAX_SEQ, -1);
+    data->output.resize(1);
+    data->seq_idx[0] = 0;
+    data->n_seq_id[0] = 1;
+    data->seq_id_data[0] = 0;
+    data->seq_id[0] = &data->seq_id_data[0];
+    data->output[0] = 1;
+
+    llama_ubatch ubatch = {};
+    ubatch.b_equal_seqs = true;
+    ubatch.n_tokens     = 1;
+    ubatch.n_seq_tokens = 1;
+    ubatch.n_seqs       = 1;
+    ubatch.n_seqs_unq   = 1;
+    ubatch.n_pos        = 1;
+    ubatch.token        = data->token.data();
+    ubatch.embd         = data->embd.data();
+    ubatch.pos          = data->pos.data();
+    ubatch.n_seq_id     = data->n_seq_id.data();
+    ubatch.seq_id       = data->seq_id.data();
+    ubatch.seq_id_unq   = data->seq_id_unq.data();
+    ubatch.seq_idx      = data->seq_idx.data();
+    ubatch.output       = data->output.data();
+    ubatch.data         = data;
+
+    auto * res = gf_res_prev_mtp.get();
+    auto gparams = graph_params_mtp(res, ubatch, mctx.get());
+    gparams.n_outputs = 1;
+
+    res->reset();
+    ggml_backend_sched_reset(sched_mtp.get());
+    mtp_sched_reset_count++;
+
+    auto * gf = model.build_graph(gparams);
+    if (!gf) {
+        LLAMA_LOG_ERROR("%s: failed to build Gemma4 MTP reserve graph\n", __func__);
+        sched_mtp.reset();
+        gf_res_prev_mtp.reset();
+        return false;
+    }
+
+    if (!ggml_backend_sched_reserve(sched_mtp.get(), gf)) {
+        LLAMA_LOG_ERROR("%s: failed to reserve Gemma4 MTP graph buffers\n", __func__);
+        sched_mtp.reset();
+        gf_res_prev_mtp.reset();
+        return false;
+    }
+    mtp_sched_reserve_count++;
+
+    res->reset();
+    ggml_backend_sched_reset(sched_mtp.get());
+    mtp_sched_reset_count++;
+    return true;
+}
+
+llm_graph_result * llama_context::process_ubatch_mtp(
+        const llama_ubatch & ubatch,
+        llama_memory_context_i * mctx,
+        ggml_status & ret) {
+    GGML_ASSERT(sched_mtp && gf_res_prev_mtp);
+
+    auto * res = gf_res_prev_mtp.get();
+    auto * gf  = res->get_gf();
+
+    auto gparams = graph_params_mtp(res, ubatch, mctx);
+    gparams.n_outputs = 1;
+
+    if (!graph_reuse_disable && res->can_reuse(gparams)) {
+        mtp_graph_reuse_count++;
+    } else {
+        res->reset();
+        ggml_backend_sched_reset(sched_mtp.get());
+        mtp_sched_reset_count++;
+        ggml_backend_sched_set_eval_callback(sched_mtp.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+
+        gf = model.build_graph(gparams);
+        if (!gf) {
+            LLAMA_LOG_ERROR("%s: failed to initialize Gemma4 MTP graph\n", __func__);
+            ret = GGML_STATUS_FAILED;
+            return nullptr;
+        }
+        mtp_graph_build_count++;
+
+        if (!ggml_backend_sched_alloc_graph(sched_mtp.get(), gf)) {
+            LLAMA_LOG_ERROR("%s: failed to allocate Gemma4 MTP graph\n", __func__);
+            ret = GGML_STATUS_ALLOC_FAILED;
+            return nullptr;
+        }
+        mtp_graph_alloc_count++;
+    }
+
+    res->set_inputs(&ubatch);
+
+    const auto status = graph_compute_mtp(res->get_gf());
+    if (status != GGML_STATUS_SUCCESS) {
+        LLAMA_LOG_ERROR("%s: failed to compute Gemma4 MTP graph, status %d\n", __func__, status);
+        ret = status;
+        return nullptr;
+    }
+
+    ret = GGML_STATUS_SUCCESS;
+    return res;
+}
+
 int32_t llama_context::decode_mtp(
         llama_seq_id seq_id,
         llama_pos attn_pos,
@@ -1351,48 +1518,86 @@ int32_t llama_context::decode_mtp(
     }
 
     const uint32_t n_embd_backbone = model.mtp_assistant->hparams.n_embd_backbone;
-    const uint32_t n_vocab = model.mtp_assistant->vocab.n_tokens();
+    const uint32_t n_vocab = model.vocab.n_tokens();
 
     std::vector<float> h_cur(h_prev, h_prev + n_embd_backbone);
     llama_token tok_cur = last_token;
 
+    auto data = std::make_shared<llama_ubatch::data_t>();
+    data->token.resize(1);
+    data->embd.resize(n_embd_backbone);
+    data->pos.resize(1);
+    data->n_seq_id.resize(1);
+    data->seq_id.resize(1);
+    data->seq_id_data.resize(1);
+    data->seq_id_unq = { seq_id };
+    data->seq_idx.assign(LLAMA_MAX_SEQ, -1);
+    data->output.resize(1);
+    data->seq_idx[seq_id] = 0;
+    data->n_seq_id[0] = 1;
+    data->seq_id_data[0] = seq_id;
+    data->seq_id[0] = &data->seq_id_data[0];
+    data->output[0] = 1;
+
+    llama_ubatch ubatch = {};
+    ubatch.b_equal_seqs = true;
+    ubatch.n_tokens     = 1;
+    ubatch.n_seq_tokens = 1;
+    ubatch.n_seqs       = 1;
+    ubatch.n_seqs_unq   = 1;
+    ubatch.n_pos        = 1;
+    ubatch.token        = data->token.data();
+    ubatch.embd         = data->embd.data();
+    ubatch.pos          = data->pos.data();
+    ubatch.n_seq_id     = data->n_seq_id.data();
+    ubatch.seq_id       = data->seq_id.data();
+    ubatch.seq_id_unq   = data->seq_id_unq.data();
+    ubatch.seq_idx      = data->seq_idx.data();
+    ubatch.output       = data->output.data();
+    ubatch.data         = data;
+
+    const bool trace_argmax = std::getenv("LLAMA_GEMMA4_MTP_ARGMAX_TRACE") != nullptr;
+    const bool disable_graph_argmax = std::getenv("LLAMA_GEMMA4_MTP_ARGMAX_DISABLE") != nullptr;
+    const bool use_dedicated_sched = std::getenv("LLAMA_GEMMA4_MTP_DEDICATED_SCHED_DISABLE") == nullptr;
+    const bool dedicated_sched_ready = use_dedicated_sched && ensure_sched_mtp();
+
+    size_t transfer_argmax_bytes = 0;
+    size_t transfer_logits_bytes = 0;
+    size_t transfer_h_bytes      = 0;
+    bool used_graph_argmax       = false;
+    bool used_cpu_logits         = false;
+    int32_t graph_evals          = 0;
+    int32_t sched_syncs          = 0;
+
+    int64_t t_input_memcpy_us = 0;
+    int64_t t_init_mtp_us     = 0;
+    int64_t t_process_us      = 0;
+    int64_t t_sync_us         = 0;
+    int64_t t_argmax_get_us   = 0;
+    int64_t t_logits_get_us   = 0;
+    int64_t t_cpu_argmax_us   = 0;
+    int64_t t_h_get_us        = 0;
+
     for (int32_t i = 0; i < n_steps; ++i) {
-        auto data = std::make_shared<llama_ubatch::data_t>();
-        data->token = { tok_cur };
-        data->embd.resize(n_embd_backbone);
+        const int64_t t_input_start = ggml_time_us();
+        data->token[0] = tok_cur;
         std::memcpy(data->embd.data(), h_cur.data(), n_embd_backbone*sizeof(float));
-        data->pos = { attn_pos + i + 1 };
-        data->n_seq_id = { 1 };
-        data->seq_id_data = { seq_id };
-        data->seq_id = { data->seq_id_data.data() };
-        data->seq_id_unq = { seq_id };
-        data->seq_idx.assign(LLAMA_MAX_SEQ, -1);
-        data->seq_idx[seq_id] = 0;
-        data->output = { 1 };
+        data->pos[0] = attn_pos + i + 1;
+        t_input_memcpy_us += ggml_time_us() - t_input_start;
 
-        llama_ubatch ubatch = {};
-        ubatch.b_equal_seqs = true;
-        ubatch.n_tokens = 1;
-        ubatch.n_seq_tokens = 1;
-        ubatch.n_seqs = 1;
-        ubatch.n_seqs_unq = 1;
-        ubatch.n_pos = 1;
-        ubatch.token = data->token.data();
-        ubatch.embd = data->embd.data();
-        ubatch.pos = data->pos.data();
-        ubatch.n_seq_id = data->n_seq_id.data();
-        ubatch.seq_id = data->seq_id.data();
-        ubatch.seq_id_unq = data->seq_id_unq.data();
-        ubatch.seq_idx = data->seq_idx.data();
-        ubatch.output = data->output.data();
-        ubatch.data = data;
-
+        const int64_t t_init_start = ggml_time_us();
         auto mctx = memory_iswa->init_mtp(seq_id, ubatch);
+        t_init_mtp_us += ggml_time_us() - t_init_start;
 
         n_outputs = 1;
 
         ggml_status status;
-        const auto * res = process_ubatch(ubatch, LLM_GRAPH_TYPE_DECODER_MTP, mctx.get(), status, /*apply_mctx=*/ false);
+        const int64_t t_process_start = ggml_time_us();
+        const auto * res = dedicated_sched_ready
+            ? process_ubatch_mtp(ubatch, mctx.get(), status)
+            : process_ubatch(ubatch, LLM_GRAPH_TYPE_DECODER_MTP, mctx.get(), status, /*apply_mctx=*/ false);
+        t_process_us += ggml_time_us() - t_process_start;
+        graph_evals++;
         if (!res) {
             return status == GGML_STATUS_ALLOC_FAILED ? -4 : -5;
         }
@@ -1406,20 +1611,55 @@ int32_t llama_context::decode_mtp(
         }
 
         llama_token tok_next = LLAMA_TOKEN_NULL;
-        ggml_backend_t backend_arg = ggml_backend_sched_get_tensor_backend(sched.get(), t_argmax);
-        ggml_backend_t backend_h   = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_next);
-        GGML_ASSERT(backend_arg && backend_h);
 
-        ggml_backend_tensor_get_async(backend_arg, t_argmax, &tok_next, 0, sizeof(tok_next));
-        ggml_backend_tensor_get_async(backend_h, t_h_next, h_cur.data(), 0, n_embd_backbone*sizeof(float));
+        const int64_t t_sync_start = ggml_time_us();
+        ggml_backend_sched_synchronize(dedicated_sched_ready ? sched_mtp.get() : sched.get());
+        t_sync_us += ggml_time_us() - t_sync_start;
+        sched_syncs++;
 
-        if (out_logits && t_logits) {
-            ggml_backend_t backend_logits = ggml_backend_sched_get_tensor_backend(sched.get(), t_logits);
-            GGML_ASSERT(backend_logits);
-            ggml_backend_tensor_get_async(backend_logits, t_logits, out_logits + (size_t) i*n_vocab, 0, (size_t) n_vocab*sizeof(float));
+        if (out_logits == nullptr && !disable_graph_argmax) {
+            int32_t best_i32 = 0;
+            const int64_t t_argmax_start = ggml_time_us();
+            ggml_backend_tensor_get(t_argmax, &best_i32, 0, sizeof(best_i32));
+            t_argmax_get_us += ggml_time_us() - t_argmax_start;
+            transfer_argmax_bytes += sizeof(best_i32);
+            used_graph_argmax = true;
+            tok_next = (llama_token) best_i32;
+        } else {
+            if (!t_logits) {
+                LLAMA_LOG_ERROR("%s: MTP graph did not expose logits for diagnostic path\n", __func__);
+                return -7;
+            }
+            std::vector<float> logits(n_vocab);
+            const size_t logits_bytes = (size_t) n_vocab * sizeof(float);
+            const int64_t t_logits_start = ggml_time_us();
+            ggml_backend_tensor_get(t_logits, logits.data(), 0, logits_bytes);
+            t_logits_get_us += ggml_time_us() - t_logits_start;
+            transfer_logits_bytes += logits_bytes;
+            used_cpu_logits = true;
+
+            const int64_t t_cpu_argmax_start = ggml_time_us();
+            float best_logit = logits[0];
+            int32_t best_i32 = 0;
+            for (uint32_t j = 1; j < n_vocab; ++j) {
+                if (logits[j] > best_logit) {
+                    best_logit = logits[j];
+                    best_i32 = (int32_t) j;
+                }
+            }
+            t_cpu_argmax_us += ggml_time_us() - t_cpu_argmax_start;
+            tok_next = (llama_token) best_i32;
+
+            if (out_logits) {
+                std::memcpy(out_logits + (size_t) i*n_vocab, logits.data(), logits_bytes);
+            }
         }
 
-        ggml_backend_sched_synchronize(sched.get());
+        const size_t h_bytes = n_embd_backbone * sizeof(float);
+        const int64_t t_h_start = ggml_time_us();
+        ggml_backend_tensor_get(t_h_next, h_cur.data(), 0, h_bytes);
+        t_h_get_us += ggml_time_us() - t_h_start;
+        transfer_h_bytes += h_bytes;
 
         out_drafts[i] = tok_next;
         tok_cur = tok_next;
@@ -1428,6 +1668,34 @@ int32_t llama_context::decode_mtp(
     std::memcpy(h_prev, h_cur.data(), n_embd_backbone*sizeof(float));
     if (out_h_prev_last) {
         std::memcpy(out_h_prev_last, h_cur.data(), n_embd_backbone*sizeof(float));
+    }
+
+    if (trace_argmax) {
+        LLAMA_LOG_WARN(
+                "%s: gemma4_mtp_argmax_path=%s sched=%s steps=%d graph_evals=%d sched_syncs=%d mtp_sched(reserve=%" PRIu64 ",reset=%" PRIu64 ") mtp_graph(build=%" PRIu64 ",alloc=%" PRIu64 ",reuse=%" PRIu64 ") transfer_argmax=%zu transfer_logits=%zu transfer_h=%zu out_logits=%s timing_us(input=%" PRId64 " init=%" PRId64 " process=%" PRId64 " sync=%" PRId64 " argmax_get=%" PRId64 " logits_get=%" PRId64 " cpu_argmax=%" PRId64 " h_get=%" PRId64 ")\n",
+                __func__,
+                used_cpu_logits ? "cpu_logits" : (used_graph_argmax ? "graph" : "none"),
+                dedicated_sched_ready ? "dedicated" : "main",
+                n_steps,
+                graph_evals,
+                sched_syncs,
+                mtp_sched_reserve_count,
+                mtp_sched_reset_count,
+                mtp_graph_build_count,
+                mtp_graph_alloc_count,
+                mtp_graph_reuse_count,
+                transfer_argmax_bytes,
+                transfer_logits_bytes,
+                transfer_h_bytes,
+                out_logits ? "true" : "false",
+                t_input_memcpy_us,
+                t_init_mtp_us,
+                t_process_us,
+                t_sync_us,
+                t_argmax_get_us,
+                t_logits_get_us,
+                t_cpu_argmax_us,
+                t_h_get_us);
     }
 
     return 0;
@@ -2419,6 +2687,29 @@ llm_graph_params llama_context::graph_params(
     };
 }
 
+llm_graph_params llama_context::graph_params_mtp(
+                        llm_graph_result * res,
+                      const llama_ubatch & ubatch,
+            const llama_memory_context_i * mctx) const {
+    return {
+        /*.arch        =*/ model.arch,
+        /*.hparams     =*/ model.hparams,
+        /*.cparams     =*/ cparams,
+        /*.ubatch      =*/ ubatch,
+        /*.gtype       =*/ LLM_GRAPH_TYPE_DECODER_MTP,
+        /*.sched       =*/ sched_mtp ? sched_mtp.get() : sched.get(),
+        /*.backend_cpu =*/ backend_cpu,
+        /*.cvec        =*/ cvec.get(),
+        /*.loras       =*/ loras.get(),
+        /*.mctx        =*/ mctx,
+        /*.cross       =*/ &cross,
+        /*.samplers    =*/ sampling.samplers,
+        /*.n_outputs   =*/ n_outputs,
+        /*.cb          =*/ graph_get_cb(),
+        /*.res         =*/ res,
+    };
+}
+
 ggml_status llama_context::graph_compute(
             ggml_cgraph * gf,
                    bool   batched) {
@@ -2444,6 +2735,31 @@ ggml_status llama_context::graph_compute(
     }
 
     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
+
+    return status;
+}
+
+ggml_status llama_context::graph_compute_mtp(ggml_cgraph * gf) {
+    const int n_threads = cparams.n_threads;
+    ggml_threadpool_t tp = threadpool;
+
+    if (backend_cpu != nullptr) {
+        auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend_cpu));
+        auto * set_threadpool_fn = (decltype(ggml_backend_cpu_set_threadpool) *) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_threadpool");
+        if (set_threadpool_fn) {
+            set_threadpool_fn(backend_cpu, tp);
+        }
+    }
+
+    for (const auto & set_n_threads_fn : set_n_threads_fns) {
+        set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
+    }
+
+    auto status = ggml_backend_sched_graph_compute_async(sched_mtp.get(), gf);
+    if (status != GGML_STATUS_SUCCESS) {
+        LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async (Gemma4 MTP) failed with error %d\n",
+                __func__, status);
+    }
 
     return status;
 }
