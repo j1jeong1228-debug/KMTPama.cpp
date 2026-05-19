@@ -57,7 +57,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_GEMMA3,           "gemma3"           },
     { LLM_ARCH_GEMMA3N,          "gemma3n"          },
     { LLM_ARCH_GEMMA4,           "gemma4"           },
-    { LLM_ARCH_GEMMA4_ASSISTANT, "gemma4_assistant" },
+    { LLM_ARCH_GEMMA4_ASSISTANT, "gemma4_mtp"       },
     { LLM_ARCH_GEMMA_EMBEDDING,  "gemma-embedding"  },
     { LLM_ARCH_STARCODER2,       "starcoder2"       },
     { LLM_ARCH_MAMBA,            "mamba"            },
@@ -210,8 +210,8 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_TOKEN_SHIFT_COUNT,                 "%s.token_shift_count"                 },
     { LLM_KV_INTERLEAVE_MOE_LAYER_STEP,         "%s.interleave_moe_layer_step"         },
     { LLM_KV_FULL_ATTENTION_INTERVAL,           "%s.full_attention_interval"           },
-    { LLM_KV_BACKBONE_HIDDEN_SIZE,              "%s.n_embd_backbone"                   },
-    { LLM_KV_ASSISTANT_NUM_CENTROIDS,           "%s.n_centroids"                       },
+    { LLM_KV_BACKBONE_HIDDEN_SIZE,              "%s.backbone_embedding_length"         },
+    { LLM_KV_ASSISTANT_NUM_CENTROIDS,           "%s.centroid_count"                    },
     { LLM_KV_ASSISTANT_CENTROID_TOP_K,          "%s.centroid_top_k"                    },
     { LLM_KV_ASSISTANT_USE_ORDERED_EMBEDDINGS,  "%s.use_ordered_embeddings"            },
 
@@ -445,8 +445,8 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_LAUREL_L,                               "blk.%d.laurel_l" },
     { LLM_TENSOR_LAUREL_R,                               "blk.%d.laurel_r" },
     { LLM_TENSOR_LAUREL_POST_NORM,                       "blk.%d.laurel_post_norm" },
-    { LLM_TENSOR_ASSIST_PRE_PROJ,                        "mtp.pre_projection" },
-    { LLM_TENSOR_ASSIST_POST_PROJ,                       "mtp.post_projection" },
+    { LLM_TENSOR_ASSIST_PRE_PROJ,                        "mtp_pre_proj" },
+    { LLM_TENSOR_ASSIST_POST_PROJ,                       "mtp_post_proj" },
     { LLM_TENSOR_ASSIST_EMBED_CENTROIDS,                 "mtp.centroids" },
     { LLM_TENSOR_ASSIST_TOKEN_ORDERING,                  "mtp.token_ordering" },
     { LLM_TENSOR_DENSE_2_OUT,                            "dense_2" },
@@ -832,7 +832,7 @@ const char * llm_arch_name(llm_arch arch) {
 }
 
 llm_arch llm_arch_from_string(const std::string & name) {
-    if (name == "gemma4_mtp" || name == "gemma4-assistant") {
+    if (name == "gemma4_assistant" || name == "gemma4-assistant") {
         return LLM_ARCH_GEMMA4_ASSISTANT;
     }
 
