@@ -557,6 +557,14 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
             GGML_ASSERT(split_states_equal(src_ss[0], src_ss[1]));
             return {assume_sync ? GGML_BACKEND_SPLIT_AXIS_MIRRORED : GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, 1};
         }
+        if (buf_ctx->debug > 0) {
+            GGML_LOG_WARN(
+                    "META_MUL_MAT_SPLIT_MISMATCH: tensor=%s src0=%s/%s src1=%s/%s assume_sync=%s\n",
+                    tensor->name,
+                    tensor->src[0] ? tensor->src[0]->name : "null", ggml_backend_meta_split_axis_name(src_ss[0].axis),
+                    tensor->src[1] ? tensor->src[1]->name : "null", ggml_backend_meta_split_axis_name(src_ss[1].axis),
+                    assume_sync ? "true" : "false");
+        }
         GGML_ABORT("fatal error");
         //return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, 1};
     };
@@ -728,6 +736,22 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
     };
 
     auto handle_flash_attn_ext = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
+        if (buf_ctx->debug > 0 &&
+                ((src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_2 &&
+                  src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_MIRRORED) ||
+                 src_ss[1].axis != GGML_BACKEND_SPLIT_AXIS_2 ||
+                 src_ss[2].axis != GGML_BACKEND_SPLIT_AXIS_2 ||
+                 (tensor->src[4] != nullptr && src_ss[3].axis != GGML_BACKEND_SPLIT_AXIS_MIRRORED) ||
+                 (tensor->src[4] != nullptr && src_ss[4].axis != GGML_BACKEND_SPLIT_AXIS_0))) {
+            GGML_LOG_WARN(
+                    "META_FLASH_ATTN_EXT_SPLIT_MISMATCH: tensor=%s q=%s/%s k=%s/%s v=%s/%s mask=%s/%s sinks=%s/%s\n",
+                    tensor->name,
+                    tensor->src[0] ? tensor->src[0]->name : "null", ggml_backend_meta_split_axis_name(src_ss[0].axis),
+                    tensor->src[1] ? tensor->src[1]->name : "null", ggml_backend_meta_split_axis_name(src_ss[1].axis),
+                    tensor->src[2] ? tensor->src[2]->name : "null", ggml_backend_meta_split_axis_name(src_ss[2].axis),
+                    tensor->src[3] ? tensor->src[3]->name : "null", ggml_backend_meta_split_axis_name(src_ss[3].axis),
+                    tensor->src[4] ? tensor->src[4]->name : "null", ggml_backend_meta_split_axis_name(src_ss[4].axis));
+        }
         GGML_ASSERT(                             src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_2);
         GGML_ASSERT(                             src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_2);
         GGML_ASSERT(                             src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_2);
@@ -1018,6 +1042,22 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
                             sum += src_ss[i].ne[s*n_bufs + j];
                         }
                         // Assert that ratio is consistent:
+                        if (buf_ctx->debug > 0 &&
+                                split_state.ne[j] * tensor->src[i]->ne[src_ss[i].axis]
+                                     != sum * tensor->ne[split_state.axis]) {
+                            GGML_LOG_WARN(
+                                    "META_RATIO_MISMATCH: tensor=%s op=%s axis=%s ne=%lld"
+                                    " src=%zu src_name=%s src_axis=%s src_ne=%lld"
+                                    " dst_part=%lld src_part_sum=%lld device=%zu\n",
+                                    tensor->name, ggml_op_name(tensor->op),
+                                    ggml_backend_meta_split_axis_name(split_state.axis),
+                                    (long long) tensor->ne[split_state.axis],
+                                    i,
+                                    tensor->src[i] ? tensor->src[i]->name : "null",
+                                    ggml_backend_meta_split_axis_name(src_ss[i].axis),
+                                    (long long) tensor->src[i]->ne[src_ss[i].axis],
+                                    (long long) split_state.ne[j], (long long) sum, j);
+                        }
                         GGML_ASSERT(split_state.ne[j] * tensor->src[i]->ne[src_ss[i].axis]
                                                == sum * tensor->ne[split_state.axis]);
                     }
@@ -1048,7 +1088,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
                 if (!srcs_info.empty()) {
                     srcs_info += ", ";
                 }
-                const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor->src[0], true);
+                const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor->src[i], true);
                 const char * axis_name = ggml_backend_meta_split_axis_name(split_state.axis);
                 std::string ne_info;
                 for (size_t j = 0; j < n_bufs; j++) {

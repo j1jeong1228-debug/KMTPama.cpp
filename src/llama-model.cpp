@@ -320,35 +320,35 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     const llama_hparams & hparams = ud->model->hparams;
     const std::string tensor_name = tensor->name;
 
-    const std::regex pattern_q_weight        ("blk\\.\\d*\\.attn_q.weight");
-    const std::regex pattern_kv_weight       ("blk\\.\\d*\\.attn_(k|v).weight");
-    const std::regex pattern_qkv_weight      ("blk\\.\\d*\\.attn_qkv.weight");
-    const std::regex pattern_q_bias          ("blk\\.\\d*\\.attn_q\\.bias");
-    const std::regex pattern_kv_bias         ("blk\\.\\d*\\.attn_(k|v)\\.bias");
-    const std::regex pattern_qkv_bias        ("blk\\.\\d*\\.attn_qkv.bias");
-    const std::regex pattern_qk_norm         ("blk\\.\\d*\\.attn_(q|k)_norm\\.weight");
+    const std::regex pattern_q_weight        ("(mtp\\.)?blk\\.\\d*\\.attn_q.weight");
+    const std::regex pattern_kv_weight       ("(mtp\\.)?blk\\.\\d*\\.attn_(k|v).weight");
+    const std::regex pattern_qkv_weight      ("(mtp\\.)?blk\\.\\d*\\.attn_qkv.weight");
+    const std::regex pattern_q_bias          ("(mtp\\.)?blk\\.\\d*\\.attn_q\\.bias");
+    const std::regex pattern_kv_bias         ("(mtp\\.)?blk\\.\\d*\\.attn_(k|v)\\.bias");
+    const std::regex pattern_qkv_bias        ("(mtp\\.)?blk\\.\\d*\\.attn_qkv.bias");
+    const std::regex pattern_qk_norm         ("(mtp\\.)?blk\\.\\d*\\.attn_(q|k)_norm\\.weight");
     const std::regex pattern_kv_cache        ("cache_(k|v)_l\\d*");
-    const std::regex pattern_attn_sinks      ("blk\\.\\d*\\.attn_sinks.weight");
-    const std::regex pattern_attn_out_weight ("blk\\.\\d*\\.attn_output.weight");
-    const std::regex pattern_attn_out_bias   ("blk\\.\\d*\\.attn_output.bias");
-    const std::regex pattern_attn_gate_weight("blk\\.\\d*\\.attn_gate.weight");
+    const std::regex pattern_attn_sinks      ("(mtp\\.)?blk\\.\\d*\\.attn_sinks.weight");
+    const std::regex pattern_attn_out_weight ("(mtp\\.)?blk\\.\\d*\\.attn_output.weight");
+    const std::regex pattern_attn_out_bias   ("(mtp\\.)?blk\\.\\d*\\.attn_output.bias");
+    const std::regex pattern_attn_gate_weight("(mtp\\.)?blk\\.\\d*\\.attn_gate.weight");
 
-    const std::regex pattern_ssm_dt          ("blk\\.\\d*\\.ssm_dt.bias");
-    const std::regex pattern_ssm_a           ("blk\\.\\d*\\.ssm_a");
-    const std::regex pattern_ssm_alpha       ("blk\\.\\d*\\.ssm_alpha.weight");
-    const std::regex pattern_ssm_beta        ("blk\\.\\d*\\.ssm_beta.weight");
-    const std::regex pattern_ssm_beta_alpha  ("blk\\.\\d*\\.ssm_ba.weight");
+    const std::regex pattern_ssm_dt          ("(mtp\\.)?blk\\.\\d*\\.ssm_dt.bias");
+    const std::regex pattern_ssm_a           ("(mtp\\.)?blk\\.\\d*\\.ssm_a");
+    const std::regex pattern_ssm_alpha       ("(mtp\\.)?blk\\.\\d*\\.ssm_alpha.weight");
+    const std::regex pattern_ssm_beta        ("(mtp\\.)?blk\\.\\d*\\.ssm_beta.weight");
+    const std::regex pattern_ssm_beta_alpha  ("(mtp\\.)?blk\\.\\d*\\.ssm_ba.weight");
     const std::regex pattern_r_cache         ("cache_r_l\\d*");
     const std::regex pattern_s_cache         ("cache_s_l\\d*");
-    const std::regex pattern_ssm_conv1d      ("blk\\.\\d*\\.ssm_conv1d.weight");
-    const std::regex pattern_ssm_out_weight  ("blk\\.\\d*\\.ssm_out.weight");
+    const std::regex pattern_ssm_conv1d      ("(mtp\\.)?blk\\.\\d*\\.ssm_conv1d.weight");
+    const std::regex pattern_ssm_out_weight  ("(mtp\\.)?blk\\.\\d*\\.ssm_out.weight");
 
-    const std::regex pattern_ffn_up_gate_weight("blk\\.\\d*\\.ffn_(up|gate)(_exps)?.weight");
-    const std::regex pattern_ffn_up_gate_bias  ("blk\\.\\d*\\.ffn_(up|gate)(_exps)?.bias");
-    const std::regex pattern_ffn_gate_up_weight("blk\\.\\d*\\.ffn_gate_up(_exps)?.weight");
-    const std::regex pattern_ffn_down_weight   ("blk\\.\\d*\\.ffn_down(_exps)?.weight");
-    const std::regex pattern_ffn_down_bias     ("blk\\.\\d*\\.ffn_down.bias");
-    const std::regex pattern_ffn_down_exps_bias("blk\\.\\d*\\.ffn_down_exps.bias");
+    const std::regex pattern_ffn_up_gate_weight("(mtp\\.)?blk\\.\\d*\\.ffn_(up|gate)(_exps)?.weight");
+    const std::regex pattern_ffn_up_gate_bias  ("(mtp\\.)?blk\\.\\d*\\.ffn_(up|gate)(_exps)?.bias");
+    const std::regex pattern_ffn_gate_up_weight("(mtp\\.)?blk\\.\\d*\\.ffn_gate_up(_exps)?.weight");
+    const std::regex pattern_ffn_down_weight   ("(mtp\\.)?blk\\.\\d*\\.ffn_down(_exps)?.weight");
+    const std::regex pattern_ffn_down_bias     ("(mtp\\.)?blk\\.\\d*\\.ffn_down.bias");
+    const std::regex pattern_ffn_down_exps_bias("(mtp\\.)?blk\\.\\d*\\.ffn_down_exps.bias");
 
     const std::regex pattern_output_weight("output\\.weight");
     const std::regex pattern_output_bias  ("output\\.bias");
@@ -384,6 +384,13 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             GGML_ASSERT(length_prefix != std::string::npos);
             prefix = tensor_name.substr(0, length_prefix + 1);
             il = std::stoull(tensor_name.substr(4, length_prefix));
+            rotation = get_il_eff(il) % ud->n_devices;
+        } else if (tensor_name.rfind("mtp.blk.", 0) == 0) {
+            const size_t il_start = 8;
+            const size_t length_prefix = tensor_name.find('.', il_start);
+            GGML_ASSERT(length_prefix != std::string::npos);
+            prefix = tensor_name.substr(0, length_prefix + 1);
+            il = std::stoull(tensor_name.substr(il_start, length_prefix - il_start));
             rotation = get_il_eff(il) % ud->n_devices;
         } else if (tensor_name.substr(0, 6) == "cache_") {
             const size_t layer_index_start = tensor_name.find("_l", 6);
