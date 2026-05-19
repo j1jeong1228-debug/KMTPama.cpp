@@ -832,6 +832,10 @@ const char * llm_arch_name(llm_arch arch) {
 }
 
 llm_arch llm_arch_from_string(const std::string & name) {
+    if (name == "gemma4_mtp" || name == "gemma4-assistant") {
+        return LLM_ARCH_GEMMA4_ASSISTANT;
+    }
+
     for (const auto & kv : LLM_ARCH_NAMES) { // NOLINT
         if (kv.second == name) {
             return kv.first;
