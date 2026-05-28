@@ -23,9 +23,11 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cinttypes>
 #include <climits>
 #include <cstdarg>
+#include <cstdlib>
 #include <fstream>
 #include <list>
 #include <regex>
@@ -278,6 +280,279 @@ static void parse_tensor_buffer_overrides(const std::string & value, std::vector
         buft_overrides.push_back(tensor_name);
         overrides.push_back({buft_overrides.back().c_str(), buft_list.at(buffer_type)});
     }
+}
+
+static std::vector<ggml_backend_dev_t> parse_device_list(const std::string & value);
+
+static bool common_gemma4_mtp_file_exists(const std::string & path) {
+    std::ifstream file(path, std::ios::binary);
+    return file.good();
+}
+
+static std::string common_gemma4_mtp_to_lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return (char) std::tolower(c);
+    });
+    return value;
+}
+
+static bool common_gemma4_mtp_is_target_model(const common_params & params) {
+    const std::string model_path = common_gemma4_mtp_to_lower(params.model.path);
+    const std::string model_name = common_gemma4_mtp_to_lower(params.model.name);
+
+    return model_path.find("gemma-4-31b-mtp-iq4_xs") != std::string::npos ||
+           model_path.find("google-gemma-4-31b-it") != std::string::npos ||
+           model_path.find("gemma-4-31b-it") != std::string::npos ||
+           model_name.find("gemma-4-31b-mtp") != std::string::npos;
+}
+
+static bool common_gemma4_mtp_has_explicit_spec(const common_params & params) {
+    if (!params.speculative.draft.mparams.path.empty() ||
+        !params.speculative.draft.mparams.hf_repo.empty() ||
+        !params.speculative.draft.mparams.url.empty()) {
+        return true;
+    }
+
+    return std::any_of(params.speculative.types.begin(), params.speculative.types.end(), [](enum common_speculative_type type) {
+        return type != COMMON_SPECULATIVE_TYPE_NONE;
+    });
+}
+
+static bool common_gemma4_mtp_has_explicit_mtp_spec(const common_params & params) {
+    if (std::any_of(params.speculative.types.begin(), params.speculative.types.end(), [](enum common_speculative_type type) {
+        return type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+    })) {
+        return true;
+    }
+
+    const std::string draft_spec =
+        common_gemma4_mtp_to_lower(params.speculative.draft.mparams.path + " " +
+                                   params.speculative.draft.mparams.hf_repo + " " +
+                                   params.speculative.draft.mparams.url);
+
+    return (draft_spec.find("gemma-4-31b") != std::string::npos && draft_spec.find("assistant") != std::string::npos) ||
+           draft_spec.find("gemma4_assistant") != std::string::npos;
+}
+
+static bool common_qwen35_mtp_is_model(const common_params & params) {
+    const std::string model_spec =
+        common_gemma4_mtp_to_lower(params.model.path + " " + params.model.name + " " + params.model.hf_repo);
+
+    return model_spec.find("qwen") != std::string::npos &&
+           (model_spec.find("qwen3.6") != std::string::npos || model_spec.find("qwen3-6") != std::string::npos) &&
+           model_spec.find("mtp") != std::string::npos;
+}
+
+static bool common_qwen35_is_model(const common_params & params) {
+    const std::string model_spec =
+        common_gemma4_mtp_to_lower(params.model.path + " " + params.model.name + " " + params.model.hf_repo);
+
+    return model_spec.find("qwen") != std::string::npos &&
+           (model_spec.find("qwen3.6") != std::string::npos || model_spec.find("qwen3-6") != std::string::npos);
+}
+
+static bool common_qwen35_tensor_internal_q8_requested(const common_params & params) {
+    const bool q8_kv = params.cache_type_k == GGML_TYPE_Q8_0 && params.cache_type_v == GGML_TYPE_Q8_0;
+
+    return common_qwen35_is_model(params) && q8_kv && params.kv_unified;
+}
+
+static std::string common_gemma4_mtp_default_assistant_path() {
+    const char * user_profile = std::getenv("USERPROFILE");
+    if (user_profile == nullptr || user_profile[0] == '\0') {
+        return "";
+    }
+
+    const std::string model_root = std::string(user_profile) + "\\.lmstudio\\models\\";
+    const std::string atomic_q4 =
+        model_root + "AtomicChat\\gemma-4-31B-it-assistant-GGUF\\gemma-4-31B-it-assistant.Q4_K_M.gguf";
+    if (common_gemma4_mtp_file_exists(atomic_q4)) {
+        return atomic_q4;
+    }
+
+    return model_root + "Radamanthys11\\Gemma-4-31B-it-assistant-GGUF\\gemma-4-31B-it-assistant-Q8_0.gguf";
+}
+
+static void common_gemma4_mtp_unsetenv(const char * name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+static void common_gemma4_mtp_setenv_if_empty(const char * name, const char * value) {
+    if (std::getenv(name) != nullptr) {
+        return;
+    }
+
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 0);
+#endif
+}
+
+static void common_gemma4_mtp_apply_longctx_margin_default() {
+    if (std::getenv("LLAMA_GEMMA4_MTP_LONGCTX_GRAPH_MARGIN_MIN") != nullptr) {
+        return;
+    }
+    if (std::getenv("LLAMA_GEMMA4_MTP_GRAPH_MARGIN_MIN") != nullptr) {
+        common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_LONGCTX_GRAPH_MARGIN_MIN", "0");
+        return;
+    }
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_LONGCTX_GRAPH_MARGIN_MIN", "0.10");
+}
+
+static void common_gemma4_mtp_apply_draft_ngl_all_default(common_params & params) {
+    if (std::getenv("LMSTUDIO_GEMMA4_MTP_KEEP_DRAFT_NGL") != nullptr) {
+        return;
+    }
+    if (params.speculative.draft.n_gpu_layers == -1) {
+        params.speculative.draft.n_gpu_layers = -2;
+    }
+}
+
+static void common_gemma4_mtp_apply_auto_load_profile(common_params & params) {
+    if (std::getenv("LMSTUDIO_GEMMA4_MTP_KEEP_LOAD_PROFILE") != nullptr) {
+        return;
+    }
+
+    params.n_batch = 160;
+    params.n_ubatch = 160;
+    if (params.n_ctx >= 32768 && params.n_ctx <= 40960) {
+        params.n_batch = 32;
+        params.n_ubatch = 32;
+    }
+    params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+}
+
+static void common_gemma4_mtp_apply_lmstudio_auto_attach(common_params & params) {
+    if (std::getenv("LMSTUDIO_GEMMA4_MTP_AUTO_DISABLE") != nullptr) {
+        return;
+    }
+    if (!common_gemma4_mtp_is_target_model(params)) {
+        return;
+    }
+    if (common_gemma4_mtp_has_explicit_spec(params)) {
+        if (common_gemma4_mtp_has_explicit_mtp_spec(params)) {
+            common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_VERIFY_TOP1_FAST", "1");
+            common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_LONGCTX_THRESHOLD", "32768");
+            common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_SHORTCTX_DRAFT_THRESHOLD", "16384");
+            common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_SHORTCTX_DRAFT_N_MAX", "2");
+            common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_MIDCTX_DRAFT_N_MAX", "3");
+            common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_LONGCTX_DRAFT_N_MAX", "4");
+            common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_DEPTH_YIELD_CONTROLLER", "1");
+            common_gemma4_mtp_apply_longctx_margin_default();
+            common_gemma4_mtp_apply_draft_ngl_all_default(params);
+            parse_tensor_buffer_overrides("(mtp_pre_proj|mtp\\.pre_projection|nextn\\.pre_projection)\\.weight=CUDA1,token_embd\\.weight=CUDA1",
+                                          params.speculative.draft.tensor_buft_overrides);
+            params.cpuparams.poll = 0;
+            params.cpuparams_batch.poll = 0;
+            params.speculative.draft.cpuparams.poll = 0;
+            params.speculative.draft.cpuparams_batch.poll = 0;
+            LOG_INF("LMSTUDIO_GEMMA4_MTP_AUTO_B9294: explicit Gemma4 draft-mtp spec detected, verify top1_fast=1 argmax_only=off-by-default draft_caps=short<16384:nmax2,mid<32768:nmax3,long:nmax4 depth_yield=on-longctx longctx_margin=0.10-b9294-default unless overridden draft_ngl=all-if-unspecified draft_override=mtp_pre_proj|mtp.pre_projection|nextn.pre_projection=CUDA1,token_embd.weight=CUDA1 poll=0\n");
+        }
+        return;
+    }
+
+    std::string assistant_path = common_gemma4_mtp_default_assistant_path();
+    if (!common_gemma4_mtp_file_exists(assistant_path)) {
+        LOG_WRN("LMSTUDIO_GEMMA4_MTP_AUTO_B9294: assistant GGUF missing, leaving speculative decoding disabled: %s\n",
+                assistant_path.c_str());
+        return;
+    }
+
+    params.speculative.draft.mparams.path = assistant_path;
+    params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+    params.speculative.draft.n_max = 4;
+    params.speculative.draft.n_min = 0;
+    params.speculative.draft.p_min = 0.0f;
+    common_gemma4_mtp_apply_draft_ngl_all_default(params);
+    params.speculative.draft.cache_type_k = GGML_TYPE_Q4_0;
+    params.speculative.draft.cache_type_v = GGML_TYPE_Q4_0;
+    params.speculative.draft.devices = parse_device_list("CUDA1");
+    parse_tensor_buffer_overrides("(mtp_pre_proj|mtp\\.pre_projection|nextn\\.pre_projection)\\.weight=CUDA1,token_embd\\.weight=CUDA1",
+                                  params.speculative.draft.tensor_buft_overrides);
+
+    params.cache_type_k = GGML_TYPE_Q4_0;
+    params.cache_type_v = GGML_TYPE_Q4_0;
+    params.split_mode = LLAMA_SPLIT_MODE_LAYER;
+    std::fill(params.tensor_split, params.tensor_split + 128, 0.0f);
+    params.tensor_split[0] = 12.0f;
+    params.tensor_split[1] = 3.0f;
+    common_gemma4_mtp_apply_auto_load_profile(params);
+    params.use_mmap = false;
+    params.enable_reasoning = 0;
+    params.cpuparams.poll = 0;
+    params.cpuparams_batch.poll = 0;
+    params.speculative.draft.cpuparams.poll = 0;
+    params.speculative.draft.cpuparams_batch.poll = 0;
+
+    common_gemma4_mtp_unsetenv("LLAMA_GEMMA4_MTP_ROW0_TARGET_ONLY_FALLBACK");
+    common_gemma4_mtp_unsetenv("LLAMA_GEMMA4_MTP_ROW0_FALLBACK_MARGIN_MIN_MILLI");
+    common_gemma4_mtp_unsetenv("LLAMA_GEMMA4_MTP_ROW0_FALLBACK_AFTER_DECODED");
+    common_gemma4_mtp_unsetenv("LLAMA_GEMMA4_MTP_SERIAL_ROW0_BATCH_TAIL");
+    common_gemma4_mtp_unsetenv("LLAMA_GEMMA4_MTP_ADAPTIVE_DRAFT");
+    common_gemma4_mtp_unsetenv("LLAMA_GEMMA4_MTP_ADAPTIVE_DRAFT_MIN_N_MAX");
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_VERIFY_TOP1_FAST", "1");
+    common_gemma4_mtp_apply_longctx_margin_default();
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_B9222_LAZY_PRENORM", "1");
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_LONGCTX_THRESHOLD", "32768");
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_SHORTCTX_DRAFT_THRESHOLD", "16384");
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_SHORTCTX_DRAFT_N_MAX", "2");
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_MIDCTX_DRAFT_N_MAX", "3");
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_LONGCTX_DRAFT_N_MAX", "4");
+    common_gemma4_mtp_setenv_if_empty("LLAMA_GEMMA4_MTP_DEPTH_YIELD_CONTROLLER", "1");
+
+    LOG_INF("LMSTUDIO_GEMMA4_MTP_AUTO_B9294: attached draft-mtp assistant=%s n_max=4 draft_caps=short<16384:nmax2,mid<32768:nmax3,long:nmax4 top1_fast=1 argmax_only=off-by-default depth_yield=on-longctx margin=off longctx_margin=0.10-b9294-default-or-0-if-global-margin-set lazy_prenorm=1 draft_ngl=all-if-unspecified draft_device=CUDA1 draft_kv=q4_0/q4_0 draft_override=mtp_pre_proj|mtp.pre_projection|nextn.pre_projection=CUDA1,token_embd.weight=CUDA1 target_split=layer target_tensor_split=12,3 target_kv=q4_0/q4_0 batch=%d ubatch=%d flash_attn=on mmap=off reasoning=off poll=0 stale_experimental_fallbacks=cleared\n",
+            assistant_path.c_str(),
+            params.n_batch,
+            params.n_ubatch);
+}
+
+static void common_qwen35_mtp_apply_lmstudio_auto(common_params & params) {
+    if (std::getenv("LMSTUDIO_QWEN_MTP_AUTO_DISABLE") != nullptr) {
+        return;
+    }
+
+    if (!common_qwen35_tensor_internal_q8_requested(params)) {
+        return;
+    }
+
+    params.split_mode = LLAMA_SPLIT_MODE_TENSOR;
+    if (params.tensor_split[0] <= 0.0f || params.tensor_split[1] <= 0.0f) {
+        std::fill(params.tensor_split, params.tensor_split + 128, 0.0f);
+        params.tensor_split[0] = 9.0f;
+        params.tensor_split[1] = 6.0f;
+    }
+
+    const bool keep_reasoning = std::getenv("LMSTUDIO_QWEN_MTP_KEEP_REASONING") != nullptr;
+    if (!keep_reasoning) {
+        params.enable_reasoning = 0;
+        params.default_template_kwargs["enable_thinking"] = "false";
+    }
+
+    if (!common_qwen35_mtp_is_model(params)) {
+        LOG_INF("LMSTUDIO_QWEN_MTP_AUTO: Qwen Tensor/Internal q8 requested, split_mode=tensor, native MTP not auto-enabled for non-MTP model, reasoning=%s\n",
+                keep_reasoning ? "preserved" : "off-by-default");
+        return;
+    }
+
+    if (common_gemma4_mtp_has_explicit_spec(params)) {
+        LOG_INF("%s", "LMSTUDIO_QWEN_MTP_AUTO: Qwen Tensor/Internal q8 requested, split_mode=tensor, preserving explicit speculative setting\n");
+        return;
+    }
+
+    params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+    params.speculative.draft.n_max = 2;
+    params.speculative.draft.n_min = 0;
+    params.speculative.draft.p_min = 0.0f;
+    params.speculative.draft.cache_type_k = GGML_TYPE_Q8_0;
+    params.speculative.draft.cache_type_v = GGML_TYPE_Q8_0;
+
+    LOG_INF("LMSTUDIO_QWEN_MTP_AUTO: Qwen Tensor/Internal q8 native draft-mtp enabled split_mode=tensor tensor_split=9,6 draft_kv=q8_0/q8_0 n_max=2 p_min=0 reasoning=%s\n",
+            keep_reasoning ? "preserved" : "off-by-default");
 }
 
 static std::string clean_file_name(const std::string & fname) {
@@ -626,6 +901,8 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     // handle model and download
     if (!skip_model_download) {
         common_params_handle_models(params, ctx_arg.ex);
+        common_gemma4_mtp_apply_lmstudio_auto_attach(params);
+        common_qwen35_mtp_apply_lmstudio_auto(params);
     }
 
     // model is required (except for server)

@@ -11,17 +11,23 @@
 #include "fit.h"
 #include "llama.h"
 #include "log.h"
+#include "mtp.h"
 #include "sampling.h"
 #include "speculative.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cinttypes>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <exception>
 #include <memory>
 #include <filesystem>
+#include <string>
 #include <utility>
 
 // fix problem with std::min and std::max
@@ -36,6 +42,21 @@
 using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+static int32_t server_env_i32(const char * name, int32_t fallback) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+
+    char * end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value) {
+        return fallback;
+    }
+
+    return (int32_t) parsed;
+}
 
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
@@ -179,6 +200,21 @@ struct server_slot {
     // Speculative decoding stats
     int32_t n_draft_total = 0;      // Total draft tokens generated
     int32_t n_draft_accepted = 0;   // Draft tokens actually accepted
+    mutable bool shortctx_draft_cap_logged = false;
+    mutable bool midctx_draft_cap_logged = false;
+    mutable bool longctx_draft_cap_logged = false;
+    mutable int32_t depth_yield_last_logged_cap = -1;
+    static constexpr size_t DRAFT_DEPTH_WINDOW_MAX = 64;
+    static constexpr size_t DRAFT_DEPTH_MAX = 8;
+
+    struct draft_depth_sample {
+        uint8_t depth;
+        uint8_t accepted;
+    };
+
+    std::deque<draft_depth_sample> draft_depth_window;
+    std::array<size_t, DRAFT_DEPTH_MAX + 1> draft_depth_generated = {};
+    std::array<size_t, DRAFT_DEPTH_MAX + 1> draft_depth_accepted = {};
 
     void reset() {
         SLT_DBG(*this, "%s", "\n");
@@ -205,6 +241,13 @@ struct server_slot {
         // clear speculative decoding stats
         n_draft_total = 0;
         n_draft_accepted = 0;
+        shortctx_draft_cap_logged = false;
+        midctx_draft_cap_logged = false;
+        longctx_draft_cap_logged = false;
+        depth_yield_last_logged_cap = -1;
+        draft_depth_window.clear();
+        draft_depth_generated.fill(0);
+        draft_depth_accepted.fill(0);
 
         task_prev = std::move(task);
         task.reset();
@@ -318,6 +361,170 @@ struct server_slot {
         }
 
         SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
+
+        return apply_longctx_draft_caps(n_draft_max);
+    }
+
+    void record_draft_acceptance(size_t generated, size_t accepted) {
+        const size_t accepted_clamped = std::min(accepted, generated);
+
+        for (size_t i = 0; i < generated && i < DRAFT_DEPTH_MAX; ++i) {
+            const uint8_t depth = (uint8_t) (i + 1);
+            const uint8_t is_accepted = i < accepted_clamped ? 1 : 0;
+
+            draft_depth_window.push_back({ depth, is_accepted });
+            draft_depth_generated[depth]++;
+            draft_depth_accepted[depth] += is_accepted;
+
+            while (draft_depth_window.size() > DRAFT_DEPTH_WINDOW_MAX) {
+                const draft_depth_sample old = draft_depth_window.front();
+                draft_depth_window.pop_front();
+                if (old.depth > 0 && old.depth <= DRAFT_DEPTH_MAX) {
+                    draft_depth_generated[old.depth]--;
+                    draft_depth_accepted[old.depth] -= old.accepted;
+                }
+            }
+        }
+    }
+
+    int apply_static_shortctx_draft_cap(int n_draft_max) const {
+        const int32_t shortctx_draft_cap = server_env_i32("LLAMA_GEMMA4_MTP_SHORTCTX_DRAFT_N_MAX", -1);
+        if (shortctx_draft_cap >= 0) {
+            const int32_t shortctx_threshold =
+                server_env_i32("LLAMA_GEMMA4_MTP_SHORTCTX_DRAFT_THRESHOLD", 16384);
+            if (prompt.n_tokens() < shortctx_threshold) {
+                const int capped = std::min<int>(n_draft_max, shortctx_draft_cap);
+                if (capped != n_draft_max && !shortctx_draft_cap_logged) {
+                    SLT_WRN(*this, "short-context draft cap: n_past = %d, threshold = %d, n_draft_max %d -> %d\n",
+                            prompt.n_tokens(), shortctx_threshold, n_draft_max, capped);
+                    shortctx_draft_cap_logged = true;
+                }
+                n_draft_max = capped;
+            }
+        }
+
+        return n_draft_max;
+    }
+
+    int apply_static_midctx_draft_cap(int n_draft_max) const {
+        const int32_t midctx_draft_cap = server_env_i32("LLAMA_GEMMA4_MTP_MIDCTX_DRAFT_N_MAX", -1);
+        if (midctx_draft_cap >= 0) {
+            const int32_t shortctx_threshold =
+                server_env_i32("LLAMA_GEMMA4_MTP_SHORTCTX_DRAFT_THRESHOLD", 16384);
+            const int32_t longctx_threshold =
+                server_env_i32("LLAMA_GEMMA4_MTP_LONGCTX_THRESHOLD", 32768);
+            const int32_t n_prompt = prompt.n_tokens();
+            if (n_prompt >= shortctx_threshold && n_prompt < longctx_threshold) {
+                const int capped = std::min<int>(n_draft_max, midctx_draft_cap);
+                if (capped != n_draft_max && !midctx_draft_cap_logged) {
+                    SLT_WRN(*this, "mid-context draft cap: n_past = %d, thresholds = [%d, %d), n_draft_max %d -> %d\n",
+                            n_prompt, shortctx_threshold, longctx_threshold, n_draft_max, capped);
+                    midctx_draft_cap_logged = true;
+                }
+                n_draft_max = capped;
+            }
+        }
+
+        return n_draft_max;
+    }
+
+    int apply_static_longctx_draft_cap(int n_draft_max) const {
+        const int32_t longctx_draft_cap = server_env_i32("LLAMA_GEMMA4_MTP_LONGCTX_DRAFT_N_MAX", -1);
+        if (longctx_draft_cap >= 0) {
+            const int32_t longctx_threshold =
+                server_env_i32("LLAMA_GEMMA4_MTP_LONGCTX_THRESHOLD", 32768);
+            if (prompt.n_tokens() >= longctx_threshold) {
+                const int capped = std::min<int>(n_draft_max, longctx_draft_cap);
+                if (capped != n_draft_max && !longctx_draft_cap_logged) {
+                    SLT_WRN(*this, "long-context draft cap: n_past = %d, threshold = %d, n_draft_max %d -> %d\n",
+                            prompt.n_tokens(), longctx_threshold, n_draft_max, capped);
+                    longctx_draft_cap_logged = true;
+                }
+                n_draft_max = capped;
+            }
+        }
+
+        return n_draft_max;
+    }
+
+    int apply_depth_yield_longctx_draft_cap(int n_draft_max) const {
+        if (server_env_i32("LLAMA_GEMMA4_MTP_DEPTH_YIELD_CONTROLLER", 0) != 1) {
+            return n_draft_max;
+        }
+
+        const int32_t longctx_threshold = server_env_i32("LLAMA_GEMMA4_MTP_LONGCTX_THRESHOLD", 32768);
+        const int32_t n_prompt = prompt.n_tokens();
+        if (n_prompt < longctx_threshold || n_draft_max <= 1) {
+            return n_draft_max;
+        }
+
+        const int32_t min_samples =
+            std::max<int32_t>(1, server_env_i32("LLAMA_GEMMA4_MTP_DEPTH_YIELD_MIN_SAMPLES", 16));
+        const int32_t min_n =
+            std::max<int32_t>(1, server_env_i32("LLAMA_GEMMA4_MTP_DEPTH_YIELD_MIN_N_MAX", 1));
+        const double row_cost =
+            (double) std::max<int32_t>(1, server_env_i32("LLAMA_GEMMA4_MTP_DEPTH_YIELD_ROW_COST_MILLI", 150)) / 1000.0;
+        const double switch_margin =
+            (double) std::max<int32_t>(0, server_env_i32("LLAMA_GEMMA4_MTP_DEPTH_YIELD_SWITCH_MARGIN_MILLI", 20)) / 1000.0;
+
+        const int32_t max_depth = std::min<int32_t>(n_draft_max, (int32_t) DRAFT_DEPTH_MAX);
+        if (draft_depth_generated[1] < (size_t) min_samples) {
+            return n_draft_max;
+        }
+
+        int32_t best_n = std::min<int32_t>(max_depth, n_draft_max);
+        double best_score = -1.0;
+        double expected_accept = 0.0;
+
+        for (int32_t n = 1; n <= max_depth; ++n) {
+            if (draft_depth_generated[n] < (size_t) min_samples) {
+                break;
+            }
+
+            const double rate =
+                (double) draft_depth_accepted[n] / (double) draft_depth_generated[n];
+            expected_accept += rate;
+
+            const double expected_emitted = 1.0 + expected_accept;
+            const double verifier_cost = 1.0 + row_cost * (double) (n + 1);
+            const double score = expected_emitted / verifier_cost;
+
+            if (score > best_score + switch_margin) {
+                best_score = score;
+                best_n = n;
+            }
+        }
+
+        best_n = std::max<int32_t>(min_n, std::min<int32_t>(best_n, n_draft_max));
+
+        const bool trace = server_env_i32("LLAMA_GEMMA4_MTP_DEPTH_YIELD_TRACE", 0) == 1;
+        if (trace && best_n != depth_yield_last_logged_cap) {
+            auto rate_milli = [&](int32_t depth) -> int32_t {
+                if (depth <= 0 || depth > (int32_t) DRAFT_DEPTH_MAX || draft_depth_generated[depth] == 0) {
+                    return -1;
+                }
+                return (int32_t) ((1000 * draft_depth_accepted[depth]) / draft_depth_generated[depth]);
+            };
+            SLT_WRN(*this,
+                    "depth-yield long-context draft cap: prompt_tokens=%d threshold=%d samples(d1=%d,d2=%d,d3=%d,d4=%d) rate_milli(d1=%d,d2=%d,d3=%d,d4=%d) row_cost=%.3f switch_margin=%.3f n_draft_max %d -> %d\n",
+                    n_prompt, longctx_threshold,
+                    (int) draft_depth_generated[1],
+                    (int) draft_depth_generated[2],
+                    (int) draft_depth_generated[3],
+                    (int) draft_depth_generated[4],
+                    rate_milli(1), rate_milli(2), rate_milli(3), rate_milli(4),
+                    row_cost, switch_margin, n_draft_max, best_n);
+            depth_yield_last_logged_cap = best_n;
+        }
+
+        return best_n;
+    }
+
+    int apply_longctx_draft_caps(int n_draft_max) const {
+        n_draft_max = apply_static_shortctx_draft_cap(n_draft_max);
+        n_draft_max = apply_static_midctx_draft_cap(n_draft_max);
+        n_draft_max = apply_static_longctx_draft_cap(n_draft_max);
+        n_draft_max = apply_depth_yield_longctx_draft_cap(n_draft_max);
 
         return n_draft_max;
     }
@@ -800,7 +1007,11 @@ private:
                                             params_base.speculative.types.end(),
                                             COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
             const bool has_draft = params_base.speculative.has_dft();
+            const bool spec_mtp_target_context = spec_mtp && !has_draft;
 
+            if (has_draft && spec_mtp) {
+                SRV_INF("%s", "[spec] skipping fit pre-reservation for external attached MTP assistant\n");
+            } else
             if (has_draft || spec_mtp) {
                 common_params params_dft = params_base;
                 bool measure_model_bytes = true;
@@ -820,7 +1031,7 @@ private:
 
                 auto mparams_dft = common_model_params_to_llama(params_dft);
                 auto cparams_dft = common_context_params_to_llama(params_dft);
-                if (spec_mtp) {
+                if (spec_mtp_target_context) {
                     cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
                     cparams_dft.type_k   = params_base.speculative.draft.cache_type_k;
                     cparams_dft.type_v   = params_base.speculative.draft.cache_type_v;
@@ -888,7 +1099,12 @@ private:
 
         add_bos_token = llama_vocab_get_add_bos(vocab);
 
-        if (params_base.speculative.has_dft()) {
+        const bool spec_mtp_attached = std::find(params_base.speculative.types.begin(),
+                                        params_base.speculative.types.end(),
+                                        COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end() &&
+                                      common_mtp_assistant_is_attached(model_tgt);
+
+        if (params_base.speculative.has_dft() && !spec_mtp_attached) {
             // TODO speculative: move to common/speculative.cpp?
             const auto & params_spec = params_base.speculative.draft;
 
@@ -935,6 +1151,9 @@ private:
 
             params_base.speculative.draft.ctx_tgt = ctx_tgt;
             params_base.speculative.draft.ctx_dft = ctx_dft.get();
+        } else if (spec_mtp_attached) {
+            params_base.speculative.draft.ctx_tgt = ctx_tgt;
+            params_base.speculative.draft.ctx_dft = nullptr;
         } else if (std::find(params_base.speculative.types.begin(), params_base.speculative.types.end(),
                              COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end()) {
             SRV_INF("creating MTP draft context against the target model '%s'\n",
@@ -3337,21 +3556,87 @@ private:
 
                 // save the original draft size
                 const size_t n_draft = slot.spec_draft.size();
+                const bool mtp_accept_trace = std::getenv("LLAMA_GEMMA4_MTP_ACCEPT_TRACE") != nullptr;
+                const bool mtp_transaction_probe = std::getenv("LLAMA_GEMMA4_MTP_TRANSACTION_PROBE") != nullptr;
+                const int64_t t_accept_trace_start = mtp_accept_trace ? ggml_time_us() : 0;
+                int64_t t_sampler_clone_us = 0;
+                int64_t t_sample_accept_us = 0;
+                int64_t t_spec_accept_us = 0;
+                int64_t t_seq_rm_us = 0;
+                size_t n_probe_accepted_draft = 0;
+                int32_t probe_mismatch = -2;
+                bool probe_top1_missing = false;
+                std::vector<llama_token> probe_sampled;
 
                 GGML_ASSERT(n_draft > 0);
 
                 // verify and try to accept the draft
                 {
                     // save the sampler sampler state in case we need to restore it
+                    const int64_t t_sampler_clone_start = mtp_accept_trace ? ggml_time_us() : 0;
                     common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
+                    if (mtp_accept_trace) {
+                        t_sampler_clone_us = ggml_time_us() - t_sampler_clone_start;
+                    }
 
                     GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
+                    if (mtp_transaction_probe) {
+                        probe_sampled.reserve(slot.spec_i_batch.size());
+                        for (size_t j = 0; j < slot.spec_i_batch.size(); ++j) {
+                            const llama_token id = llama_get_sampled_token_ith(slot.ctx_tgt, slot.spec_i_batch[j]);
+                            probe_sampled.push_back(id);
+                            if (id == LLAMA_TOKEN_NULL) {
+                                probe_top1_missing = true;
+                            }
+                        }
+
+                        if (!probe_top1_missing) {
+                            size_t j = 0;
+                            for (; j < n_draft; ++j) {
+                                if (probe_sampled[j] != slot.spec_draft[j]) {
+                                    probe_mismatch = (int32_t) j;
+                                    break;
+                                }
+                            }
+                            n_probe_accepted_draft = j;
+                            if (j == n_draft) {
+                                probe_mismatch = -1;
+                            }
+                        }
+                    }
+
+                    const int64_t t_sample_accept_start = mtp_accept_trace ? ggml_time_us() : 0;
                     auto accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft);
+                    if (mtp_accept_trace) {
+                        t_sample_accept_us = ggml_time_us() - t_sample_accept_start;
+                    }
                     slot.spec_i_batch.clear();
 
                     GGML_ASSERT(accepted.size() >= 1);
 
                     const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
+                    const size_t n_accepted_draft = accepted.size() - 1;
+                    if (mtp_transaction_probe) {
+                        auto tokens_to_csv = [](const std::vector<llama_token> & tokens) {
+                            std::string out;
+                            for (size_t j = 0; j < tokens.size(); ++j) {
+                                if (j > 0) {
+                                    out += ",";
+                                }
+                                out += std::to_string(tokens[j]);
+                            }
+                            return out;
+                        };
+
+                        const bool probe_matches_current =
+                            !probe_top1_missing && n_probe_accepted_draft == n_accepted_draft;
+                        SLT_WRN(slot,
+                                "mtp_transaction_probe: draft=%zu rows=%zu top1_available=%d probe_accepted=%zu current_accepted=%zu probe_matches_current=%d mismatch=%d sampled=[%s] draft_tokens=[%s]\n",
+                                n_draft, probe_sampled.size(), probe_top1_missing ? 0 : 1,
+                                n_probe_accepted_draft, n_accepted_draft, probe_matches_current ? 1 : 0,
+                                probe_mismatch, tokens_to_csv(probe_sampled).c_str(),
+                                tokens_to_csv(slot.spec_draft).c_str());
+                    }
 
                     const bool use_ckpt_tgt =
                         ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
@@ -3394,7 +3679,11 @@ private:
                         SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
                     }
 
+                    const int64_t t_spec_accept_start = mtp_accept_trace ? ggml_time_us() : 0;
                     common_speculative_accept(spec.get(), slot.id, accepted.size() - 1);
+                    if (mtp_accept_trace) {
+                        t_spec_accept_us = ggml_time_us() - t_spec_accept_start;
+                    }
 
                     slot.spec_draft = std::move(accepted);
                 }
@@ -3407,6 +3696,7 @@ private:
 
                 // update how many tokens out of those tested were accepted
                 slot.n_draft_accepted += ids.size() - 1;
+                slot.record_draft_acceptance(n_draft, ids.size() - 1);
 
                 // add accepted tokens to the prompt
                 slot.prompt.tokens.keep_first(slot.prompt.n_tokens() - n_draft);
@@ -3415,9 +3705,19 @@ private:
                 slot.sampled = ids.back(); // last accepted token
                 SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
 
+                const int64_t t_seq_rm_start = mtp_accept_trace ? ggml_time_us() : 0;
                 common_context_seq_rm(slot.ctx_tgt, slot.id, slot.prompt.tokens.pos_next(), -1);
                 if (slot.ctx_dft) {
                     common_context_seq_rm(slot.ctx_dft, slot.id, slot.prompt.tokens.pos_next(), -1);
+                }
+                if (mtp_accept_trace) {
+                    t_seq_rm_us = ggml_time_us() - t_seq_rm_start;
+                    SLT_WRN(slot,
+                            "mtp_accept_trace: draft=%zu accepted=%zu rollback=%u verified_rows=%zu used_rows=%zu wasted_rows=%zu clone_us=%" PRId64 " sample_accept_us=%" PRId64 " spec_accept_us=%" PRId64 " seq_rm_us=%" PRId64 " total_us=%" PRId64 "\n",
+                            n_draft, ids.size() - 1, (uint32_t) (n_draft + 1 - ids.size()),
+                            n_draft + 1, ids.size(), (n_draft + 1) - ids.size(),
+                            t_sampler_clone_us, t_sample_accept_us,
+                            t_spec_accept_us, t_seq_rm_us, ggml_time_us() - t_accept_trace_start);
                 }
 
                 for (size_t i = 0; i < ids.size(); ++i) {

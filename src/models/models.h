@@ -806,6 +806,35 @@ struct llama_model_gemma4 : public llama_model_base {
         ggml_tensor * project_per_layer_inputs(ggml_tensor * inp_batch, ggml_tensor * inp_per_layer);
     };
 
+    struct graph_mtp : public llm_graph_context {
+        const llama_model & target;
+        const llama_model & mtp;
+
+        graph_mtp(const llama_model & target_model, const llama_model & mtp_model, const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
+
+struct llama_model_gemma4_assistant : public llama_model_base {
+    llama_model_gemma4_assistant(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_graph_context {
+        const llama_model & model;
+
+        const int64_t n_embd_backbone;
+        const int64_t n_assist_centroids;
+        const int64_t n_assist_centroid_top_k;
+        const bool    use_ordered_embeddings;
+
+        graph(const llama_model & model, const llm_graph_params & params);
+
+        ggml_tensor * build_masked_embedding_logits(ggml_tensor * hidden, ggml_tensor * lm_head_w);
+    };
+
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 

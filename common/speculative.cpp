@@ -5,6 +5,7 @@
 #include "llama.h"
 #include "../src/llama-ext.h" // staging API: llama_set_embeddings_pre_norm / llama_get_embeddings_pre_norm_ith (used by MTP)
 #include "log.h"
+#include "mtp.h"
 #include "ngram-cache.h"
 #include "ngram-map.h"
 #include "ngram-mod.h"
@@ -777,6 +778,216 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     }
 };
 
+struct common_speculative_impl_attached_mtp : public common_speculative_impl {
+    common_params_speculative_draft params;
+
+    int32_t n_embd = 0;
+
+    std::vector<std::vector<float>> pending_h;
+    std::vector<uint8_t> pending_h_ready;
+    std::vector<llama_pos> pending_pos;
+    std::vector<llama_token> pending_token;
+
+    std::vector<std::vector<float>> verify_h;
+    std::vector<std::vector<llama_pos>> verify_pos;
+    std::vector<std::vector<llama_token>> verify_token;
+    std::vector<int32_t> verify_h_rows;
+
+    std::vector<std::vector<int32_t>> h_batch_rows;
+    std::vector<llama_tokens> seen_tokens;
+
+    common_speculative_impl_attached_mtp(const common_params_speculative & params, uint32_t n_seq)
+        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq)
+        , params(params.draft) {
+        auto * ctx_tgt = this->params.ctx_tgt;
+        GGML_ASSERT(ctx_tgt && "attached MTP requires ctx_tgt");
+        GGML_ASSERT(common_mtp_assistant_is_attached(llama_get_model(ctx_tgt)) && "attached MTP assistant was not loaded");
+
+        n_embd = (int32_t) common_mtp_assistant_n_embd_backbone(llama_get_model(ctx_tgt));
+        GGML_ASSERT(n_embd > 0);
+
+        LOG_INF("%s: adding speculative implementation 'draft-mtp' (attached assistant)\n", __func__);
+        LOG_INF("%s: - n_max=%d, n_min=%d, p_min=%.2f, n_embd_backbone=%d\n",
+                __func__, this->params.n_max, this->params.n_min, this->params.p_min, n_embd);
+        LOG_INF("%s: - gpu_layers=%d, cache_k=%s, cache_v=%s, ctx_tgt=%s, ctx_dft=%s, devices=[%s]\n", __func__,
+                this->params.n_gpu_layers,
+                ggml_type_name(this->params.cache_type_k),
+                ggml_type_name(this->params.cache_type_v),
+                ctx_tgt ? "yes" : "no",
+                this->params.ctx_dft ? "yes" : "no",
+                common_speculative_get_devices_str(this->params.devices).c_str());
+
+        llama_set_embeddings(ctx_tgt, false);
+        common_mtp_set_embeddings_pre_norm(ctx_tgt, true, /*masked*/ true);
+
+        pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
+        pending_h_ready.assign(n_seq, false);
+        pending_pos.assign(n_seq, -1);
+        pending_token.assign(n_seq, LLAMA_TOKEN_NULL);
+
+        verify_h.assign(n_seq, {});
+        verify_pos.assign(n_seq, {});
+        verify_token.assign(n_seq, {});
+        verify_h_rows.assign(n_seq, 0);
+
+        h_batch_rows.assign(n_seq, {});
+        seen_tokens.assign(n_seq, {});
+    }
+
+    void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
+        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq || prompt.empty()) {
+            return;
+        }
+
+        bool ready = pending_h_ready[seq_id] &&
+            pending_pos[seq_id] == (llama_pos) (prompt.size() - 1) &&
+            pending_token[seq_id] == prompt.back();
+
+        if (ready) {
+            const auto & seen = seen_tokens[seq_id];
+            ready = seen.size() >= prompt.size() &&
+                std::equal(prompt.begin(), prompt.end(), seen.begin());
+        }
+
+        pending_h_ready[seq_id] = ready;
+        llama_set_embeddings(params.ctx_tgt, false);
+        common_mtp_set_embeddings_pre_norm(params.ctx_tgt, true, /*masked*/ true);
+    }
+
+    bool process(const llama_batch & batch_in) override {
+        if (batch_in.n_tokens <= 0 || batch_in.token == nullptr || batch_in.embd != nullptr) {
+            return true;
+        }
+
+        for (auto & rows : h_batch_rows) {
+            rows.clear();
+        }
+
+        for (int k = 0; k < batch_in.n_tokens; ++k) {
+            GGML_ASSERT(batch_in.n_seq_id[k] == 1);
+            const llama_seq_id seq_id = batch_in.seq_id[k][0];
+            if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
+                continue;
+            }
+
+            const llama_pos pos = batch_in.pos[k];
+            if (pos >= 0) {
+                auto & seen = seen_tokens[seq_id];
+                if ((size_t) pos >= seen.size()) {
+                    seen.resize((size_t) pos + 1, LLAMA_TOKEN_NULL);
+                }
+                seen[pos] = batch_in.token[k];
+            }
+
+            if (batch_in.logits == nullptr || batch_in.logits[k]) {
+                h_batch_rows[seq_id].push_back(k);
+            }
+        }
+
+        const size_t row_bytes = (size_t) n_embd * sizeof(float);
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+            if (h_batch_rows[seq_id].empty()) {
+                continue;
+            }
+
+            const int32_t n_rows = (int32_t) h_batch_rows[seq_id].size();
+            verify_h_rows[seq_id] = n_rows;
+            verify_h[seq_id].resize((size_t) n_rows * n_embd);
+            verify_pos[seq_id].resize(n_rows);
+            verify_token[seq_id].resize(n_rows);
+
+            for (int32_t i = 0; i < n_rows; ++i) {
+                const int32_t i_batch = h_batch_rows[seq_id][i];
+                const float * h = common_mtp_get_embeddings_pre_norm_ith(params.ctx_tgt, i_batch);
+                if (!h) {
+                    LOG_ERR("%s: missing target pre-norm hidden row\n", __func__);
+                    return false;
+                }
+                std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
+                verify_pos[seq_id][i] = batch_in.pos[i_batch];
+                verify_token[seq_id][i] = batch_in.token[i_batch];
+            }
+
+            std::memcpy(pending_h[seq_id].data(),
+                    verify_h[seq_id].data() + (size_t) (n_rows - 1) * n_embd, row_bytes);
+            pending_h_ready[seq_id] = true;
+            pending_pos[seq_id] = verify_pos[seq_id][n_rows - 1];
+            pending_token[seq_id] = verify_token[seq_id][n_rows - 1];
+        }
+
+        return true;
+    }
+
+    void draft(common_speculative_draft_params_vec & dparams) override {
+        auto * ctx_tgt = params.ctx_tgt;
+
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+            auto & dp = dparams[seq_id];
+            if (!dp.drafting) {
+                continue;
+            }
+
+            auto & result = *dp.result;
+            result.clear();
+
+            const int32_t n_max = dp.n_max > 0 ? std::min(params.n_max, dp.n_max) : params.n_max;
+            if (n_max <= 0 || !pending_h_ready[seq_id] || pending_pos[seq_id] != dp.n_past - 1) {
+                continue;
+            }
+
+            std::vector<llama_token> drafts(n_max, LLAMA_TOKEN_NULL);
+            std::vector<float> h = pending_h[seq_id];
+
+            const int32_t rc = common_mtp_decode(
+                    ctx_tgt, seq_id, dp.n_past - 1, dp.id_last,
+                    h.data(), n_max, drafts.data(), nullptr, nullptr);
+            if (rc != 0) {
+                LOG_WRN("%s: common_mtp_decode returned %d\n", __func__, rc);
+                continue;
+            }
+
+            int32_t n_keep = n_max;
+            for (int32_t i = 0; i < n_max; ++i) {
+                if (drafts[i] == LLAMA_TOKEN_NULL) {
+                    n_keep = i;
+                    break;
+                }
+            }
+
+            result.assign(drafts.begin(), drafts.begin() + n_keep);
+            if (result.size() < (size_t) params.n_min) {
+                result.clear();
+            }
+        }
+    }
+
+    void accept(llama_seq_id seq_id, uint16_t n_accepted, bool /*is_other*/) override {
+        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
+            return;
+        }
+
+        const int32_t n_rows = verify_h_rows[seq_id];
+        if (n_rows <= 0) {
+            return;
+        }
+
+        const int32_t i_h = std::min<int32_t>(n_accepted, n_rows - 1);
+        const size_t row_bytes = (size_t) n_embd * sizeof(float);
+        std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
+        pending_h_ready[seq_id] = true;
+        pending_pos[seq_id] = verify_pos[seq_id][i_h];
+        pending_token[seq_id] = verify_token[seq_id][i_h];
+    }
+
+    bool need_embd() const override {
+        return false;
+    }
+
+    bool need_embd_pre_norm() const override {
+        return true;
+    }
+};
+
 // state of self-speculation (simple implementation, not ngram-map)
 struct common_speculative_impl_ngram_simple : public common_speculative_impl {
     common_params_speculative_ngram_map params;
@@ -1329,7 +1540,10 @@ common_speculative * common_speculative_init(common_params_speculative & params,
 
         bool has_draft_simple = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE));
         bool has_draft_eagle3 = false; // TODO PR-18039: if params.speculative.eagle3
-        bool has_mtp = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_MTP)) && params.draft.ctx_dft != nullptr;
+        bool has_attached_mtp = params.draft.ctx_tgt &&
+            common_mtp_assistant_is_attached(llama_get_model(params.draft.ctx_tgt));
+        bool has_mtp = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_MTP)) &&
+            (params.draft.ctx_dft != nullptr || has_attached_mtp);
 
         bool has_ngram_cache   = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_CACHE));
         bool has_ngram_simple  = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE));
@@ -1395,7 +1609,12 @@ common_speculative * common_speculative_init(common_params_speculative & params,
                 break;
             }
             case COMMON_SPECULATIVE_TYPE_DRAFT_MTP: {
-                impls.push_back(std::make_unique<common_speculative_impl_draft_mtp>(config.params, n_seq));
+                if (config.params.draft.ctx_tgt &&
+                        common_mtp_assistant_is_attached(llama_get_model(config.params.draft.ctx_tgt))) {
+                    impls.push_back(std::make_unique<common_speculative_impl_attached_mtp>(config.params, n_seq));
+                } else {
+                    impls.push_back(std::make_unique<common_speculative_impl_draft_mtp>(config.params, n_seq));
+                }
                 break;
             }
             case COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE: {

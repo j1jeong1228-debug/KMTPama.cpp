@@ -267,6 +267,34 @@ namespace GGUFMeta {
     };
 }
 
+static std::string llama_model_loader_gemma4_assistant_alias_key(const llama_model_loader & ml, enum llm_kv kid) {
+    if (ml.llm_kv.arch != LLM_ARCH_GEMMA4_ASSISTANT || ml.arch_name.empty()) {
+        return {};
+    }
+
+    const char * arch_canonical = llm_arch_name(LLM_ARCH_GEMMA4_ASSISTANT);
+    if (ml.arch_name == arch_canonical) {
+        return {};
+    }
+
+    const std::string key = ml.llm_kv(kid);
+    const std::string prefix = std::string(arch_canonical) + ".";
+    if (key.rfind(prefix, 0) != 0) {
+        return {};
+    }
+
+    switch (kid) {
+        case LLM_KV_BACKBONE_HIDDEN_SIZE:
+            return ml.arch_name + ".n_embd_backbone";
+        case LLM_KV_ASSISTANT_NUM_CENTROIDS:
+            return ml.arch_name + ".n_centroids";
+        default:
+            break;
+    }
+
+    return ml.arch_name + key.substr(std::string(arch_canonical).size());
+}
+
     template<typename T>
     typename std::enable_if<std::is_integral<T>::value, bool>::type
     llama_model_loader::get_arr_n(const std::string & key, T & result, bool required) {
@@ -290,7 +318,20 @@ namespace GGUFMeta {
     template<typename T>
     typename std::enable_if<std::is_integral<T>::value, bool>::type
     llama_model_loader::get_arr_n(enum llm_kv kid, T & result, bool required) {
-        return get_arr_n(llm_kv(kid), result, required);
+        const std::string key = llm_kv(kid);
+        if (get_arr_n(key, result, false)) {
+            return true;
+        }
+
+        const std::string alias = llama_model_loader_gemma4_assistant_alias_key(*this, kid);
+        if (!alias.empty() && get_arr_n(alias, result, false)) {
+            return true;
+        }
+
+        if (required) {
+            throw std::runtime_error(format("key not found in model: %s", key.c_str()));
+        }
+        return false;
     }
 
     template bool llama_model_loader::get_arr_n(enum llm_kv kid, uint32_t & result, bool required);
@@ -389,7 +430,20 @@ namespace GGUFMeta {
 
     template<typename T>
     bool llama_model_loader::get_arr(enum llm_kv kid, T & result, bool required) {
-        return get_arr(llm_kv(kid), result, required);
+        const std::string key = llm_kv(kid);
+        if (get_arr(key, result, false)) {
+            return true;
+        }
+
+        const std::string alias = llama_model_loader_gemma4_assistant_alias_key(*this, kid);
+        if (!alias.empty() && get_arr(alias, result, false)) {
+            return true;
+        }
+
+        if (required) {
+            throw std::runtime_error(format("array key not found in model: %s", key.c_str()));
+        }
+        return false;
     }
 
     template bool llama_model_loader::get_arr<std::vector<std::string>>(enum llm_kv kid, std::vector<std::string> & result, bool required);
@@ -412,7 +466,20 @@ namespace GGUFMeta {
 
     template<typename T>
     bool llama_model_loader::get_key(enum llm_kv kid, T & result, bool required) {
-        return get_key(llm_kv(kid), result, required);
+        const std::string key = llm_kv(kid);
+        if (get_key(key, result, false)) {
+            return true;
+        }
+
+        const std::string alias = llama_model_loader_gemma4_assistant_alias_key(*this, kid);
+        if (!alias.empty() && get_key(alias, result, false)) {
+            return true;
+        }
+
+        if (required) {
+            throw std::runtime_error(format("key not found in model: %s", key.c_str()));
+        }
+        return false;
     }
 
     template bool llama_model_loader::get_key<bool>       (enum llm_kv kid, bool & result,        bool required);
@@ -475,7 +542,20 @@ namespace GGUFMeta {
 
     template<typename T>
     bool llama_model_loader::get_key_or_arr(enum llm_kv kid, T & result, uint32_t n, bool required) {
-        return get_key_or_arr(llm_kv(kid), result, n, required);
+        const std::string key = llm_kv(kid);
+        if (get_key_or_arr(key, result, n, false)) {
+            return true;
+        }
+
+        const std::string alias = llama_model_loader_gemma4_assistant_alias_key(*this, kid);
+        if (!alias.empty() && get_key_or_arr(alias, result, n, false)) {
+            return true;
+        }
+
+        if (required) {
+            throw std::runtime_error(format("key not found in model: %s", key.c_str()));
+        }
+        return false;
     }
 
     bool llama_model_loader::get_key_or_arr(enum llm_kv kid, uint32_t & result, bool required) {
@@ -484,6 +564,21 @@ namespace GGUFMeta {
         const int id = gguf_find_key(metadata, key.c_str());
 
         if (id < 0) {
+            const std::string alias = llama_model_loader_gemma4_assistant_alias_key(*this, kid);
+            if (!alias.empty()) {
+                const int id_alias = gguf_find_key(metadata, alias.c_str());
+                if (id_alias >= 0) {
+                    if (gguf_get_kv_type(metadata, id_alias) == GGUF_TYPE_ARRAY) {
+                        if (required) {
+                            throw std::runtime_error(format("expected scalar, found array for key: %s", alias.c_str()));
+                        }
+                        return false;
+                    }
+
+                    return get_key(alias, result, required);
+                }
+            }
+
             if (required) {
                 throw std::runtime_error(format("key not found in model: %s", key.c_str()));
             }
@@ -830,6 +925,36 @@ const llama_model_loader::llama_tensor_weight * llama_model_loader::get_weight(c
     auto pos = weights_map.find(name);
     if (pos != weights_map.end()) {
         return &pos->second;
+    }
+
+    if (llm_kv.arch == LLM_ARCH_GEMMA4_ASSISTANT) {
+        const std::string wanted(name);
+        std::vector<std::string> aliases;
+
+        aliases.push_back("assistant."        + wanted);
+        aliases.push_back("gemma4_assistant." + wanted);
+        aliases.push_back("gemma4-assistant." + wanted);
+
+        if (wanted.rfind("nextn.pre_projection.", 0) == 0) {
+            const std::string suffix = wanted.substr(std::string("nextn.pre_projection.").size());
+            aliases.push_back("mtp.pre_projection."           + suffix);
+            aliases.push_back("mtp_pre_proj."                 + suffix);
+            aliases.push_back("assistant.mtp.pre_projection." + suffix);
+            aliases.push_back("assistant.mtp_pre_proj."       + suffix);
+        } else if (wanted.rfind("nextn.post_projection.", 0) == 0) {
+            const std::string suffix = wanted.substr(std::string("nextn.post_projection.").size());
+            aliases.push_back("mtp.post_projection."           + suffix);
+            aliases.push_back("mtp_post_proj."                 + suffix);
+            aliases.push_back("assistant.mtp.post_projection." + suffix);
+            aliases.push_back("assistant.mtp_post_proj."       + suffix);
+        }
+
+        for (const std::string & alias : aliases) {
+            pos = weights_map.find(alias);
+            if (pos != weights_map.end()) {
+                return &pos->second;
+            }
+        }
     }
 
     return nullptr;

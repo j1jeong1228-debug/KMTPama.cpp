@@ -17,6 +17,9 @@
 struct llama_cparams;
 struct llama_ubatch;
 struct llama_model_loader;
+struct llama_model;
+
+extern thread_local const llama_model * llama_mtp_target_for_split_loading;
 
 // available models
 enum llm_type {
@@ -558,6 +561,15 @@ struct llama_model {
     struct ggml_tensor * per_layer_tok_embd   = nullptr;
     struct ggml_tensor * per_layer_model_proj = nullptr;
     struct ggml_tensor * per_layer_proj_norm  = nullptr;
+
+    // gemma4_assistant attached MTP drafter
+    struct ggml_tensor * assist_pre_proj        = nullptr;
+    struct ggml_tensor * assist_post_proj       = nullptr;
+    struct ggml_tensor * assist_embed_centroids = nullptr;
+    struct ggml_tensor * assist_token_ordering  = nullptr;
+
+    std::unique_ptr<llama_model> mtp_assistant;
+    const llama_model * mtp_target_for_split = nullptr;
 
     std::vector<llama_layer> layers;
 

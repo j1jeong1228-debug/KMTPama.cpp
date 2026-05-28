@@ -34,6 +34,8 @@
 #include <string>
 #include <vector>
 
+thread_local const llama_model * llama_mtp_target_for_split_loading = nullptr;
+
 static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params & params) {
     switch (arch) {
         case LLM_ARCH_LLAMA:
@@ -136,6 +138,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_gemma3n(params);
         case LLM_ARCH_GEMMA4:
             return new llama_model_gemma4(params);
+        case LLM_ARCH_GEMMA4_ASSISTANT:
+            return new llama_model_gemma4_assistant(params);
         case LLM_ARCH_GEMMA_EMBEDDING:
             return new llama_model_gemma_embedding(params);
         case LLM_ARCH_STARCODER2:
@@ -320,35 +324,35 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     const llama_hparams & hparams = ud->model->hparams;
     const std::string tensor_name = tensor->name;
 
-    const std::regex pattern_q_weight        ("blk\\.\\d*\\.attn_q.weight");
-    const std::regex pattern_kv_weight       ("blk\\.\\d*\\.attn_(k|v).weight");
-    const std::regex pattern_qkv_weight      ("blk\\.\\d*\\.attn_qkv.weight");
-    const std::regex pattern_q_bias          ("blk\\.\\d*\\.attn_q\\.bias");
-    const std::regex pattern_kv_bias         ("blk\\.\\d*\\.attn_(k|v)\\.bias");
-    const std::regex pattern_qkv_bias        ("blk\\.\\d*\\.attn_qkv.bias");
-    const std::regex pattern_qk_norm         ("blk\\.\\d*\\.attn_(q|k)_norm\\.weight");
+    const std::regex pattern_q_weight        ("(mtp\\.)?blk\\.\\d*\\.attn_q.weight");
+    const std::regex pattern_kv_weight       ("(mtp\\.)?blk\\.\\d*\\.attn_(k|v).weight");
+    const std::regex pattern_qkv_weight      ("(mtp\\.)?blk\\.\\d*\\.attn_qkv.weight");
+    const std::regex pattern_q_bias          ("(mtp\\.)?blk\\.\\d*\\.attn_q\\.bias");
+    const std::regex pattern_kv_bias         ("(mtp\\.)?blk\\.\\d*\\.attn_(k|v)\\.bias");
+    const std::regex pattern_qkv_bias        ("(mtp\\.)?blk\\.\\d*\\.attn_qkv.bias");
+    const std::regex pattern_qk_norm         ("(mtp\\.)?blk\\.\\d*\\.attn_(q|k)_norm\\.weight");
     const std::regex pattern_kv_cache        ("cache_(k|v)_l\\d*");
-    const std::regex pattern_attn_sinks      ("blk\\.\\d*\\.attn_sinks.weight");
-    const std::regex pattern_attn_out_weight ("blk\\.\\d*\\.attn_output.weight");
-    const std::regex pattern_attn_out_bias   ("blk\\.\\d*\\.attn_output.bias");
-    const std::regex pattern_attn_gate_weight("blk\\.\\d*\\.attn_gate.weight");
+    const std::regex pattern_attn_sinks      ("(mtp\\.)?blk\\.\\d*\\.attn_sinks.weight");
+    const std::regex pattern_attn_out_weight ("(mtp\\.)?blk\\.\\d*\\.attn_output.weight");
+    const std::regex pattern_attn_out_bias   ("(mtp\\.)?blk\\.\\d*\\.attn_output.bias");
+    const std::regex pattern_attn_gate_weight("(mtp\\.)?blk\\.\\d*\\.attn_gate.weight");
 
-    const std::regex pattern_ssm_dt          ("blk\\.\\d*\\.ssm_dt.bias");
-    const std::regex pattern_ssm_a           ("blk\\.\\d*\\.ssm_a");
-    const std::regex pattern_ssm_alpha       ("blk\\.\\d*\\.ssm_alpha.weight");
-    const std::regex pattern_ssm_beta        ("blk\\.\\d*\\.ssm_beta.weight");
-    const std::regex pattern_ssm_beta_alpha  ("blk\\.\\d*\\.ssm_ba.weight");
+    const std::regex pattern_ssm_dt          ("(mtp\\.)?blk\\.\\d*\\.ssm_dt.bias");
+    const std::regex pattern_ssm_a           ("(mtp\\.)?blk\\.\\d*\\.ssm_a");
+    const std::regex pattern_ssm_alpha       ("(mtp\\.)?blk\\.\\d*\\.ssm_alpha.weight");
+    const std::regex pattern_ssm_beta        ("(mtp\\.)?blk\\.\\d*\\.ssm_beta.weight");
+    const std::regex pattern_ssm_beta_alpha  ("(mtp\\.)?blk\\.\\d*\\.ssm_ba.weight");
     const std::regex pattern_r_cache         ("cache_r_l\\d*");
     const std::regex pattern_s_cache         ("cache_s_l\\d*");
-    const std::regex pattern_ssm_conv1d      ("blk\\.\\d*\\.ssm_conv1d.weight");
-    const std::regex pattern_ssm_out_weight  ("blk\\.\\d*\\.ssm_out.weight");
+    const std::regex pattern_ssm_conv1d      ("(mtp\\.)?blk\\.\\d*\\.ssm_conv1d.weight");
+    const std::regex pattern_ssm_out_weight  ("(mtp\\.)?blk\\.\\d*\\.ssm_out.weight");
 
-    const std::regex pattern_ffn_up_gate_weight("blk\\.\\d*\\.ffn_(up|gate)(_exps)?.weight");
-    const std::regex pattern_ffn_up_gate_bias  ("blk\\.\\d*\\.ffn_(up|gate)(_exps)?.bias");
-    const std::regex pattern_ffn_gate_up_weight("blk\\.\\d*\\.ffn_gate_up(_exps)?.weight");
-    const std::regex pattern_ffn_down_weight   ("blk\\.\\d*\\.ffn_down(_exps)?.weight");
-    const std::regex pattern_ffn_down_bias     ("blk\\.\\d*\\.ffn_down.bias");
-    const std::regex pattern_ffn_down_exps_bias("blk\\.\\d*\\.ffn_down_exps.bias");
+    const std::regex pattern_ffn_up_gate_weight("(mtp\\.)?blk\\.\\d*\\.ffn_(up|gate)(_exps)?.weight");
+    const std::regex pattern_ffn_up_gate_bias  ("(mtp\\.)?blk\\.\\d*\\.ffn_(up|gate)(_exps)?.bias");
+    const std::regex pattern_ffn_gate_up_weight("(mtp\\.)?blk\\.\\d*\\.ffn_gate_up(_exps)?.weight");
+    const std::regex pattern_ffn_down_weight   ("(mtp\\.)?blk\\.\\d*\\.ffn_down(_exps)?.weight");
+    const std::regex pattern_ffn_down_bias     ("(mtp\\.)?blk\\.\\d*\\.ffn_down.bias");
+    const std::regex pattern_ffn_down_exps_bias("(mtp\\.)?blk\\.\\d*\\.ffn_down_exps.bias");
 
     const std::regex pattern_output_weight("output\\.weight");
     const std::regex pattern_output_bias  ("output\\.bias");
@@ -358,6 +362,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
 
         const ggml_tensor * tensor_axis_0;
 
+        const llama_model * split_model;
         uint32_t il;
         size_t   rotation; // when assigning tensor slices, rotate how the rounding is done for more even allocation
     };
@@ -366,34 +371,82 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 const ggml_backend_meta_split_axis axis, const std::string & suffix = "", const std::string & suffix_fallback = "") -> tensor_config {
         // the layers in a tensor can be inhomogeneous, if the pattern is cleanly divided by the number of GPUs there can be aliasing effects,
         //     count only the same type of previous layers to avoid this
-        auto get_il_eff = [&](const size_t il){
+        auto get_il_eff = [&](const llama_hparams & split_hparams, const size_t il){
             size_t ret = 0;
-            const bool il_is_recurrent = hparams.is_recurrent(il);
-            const bool il_is_swa       = hparams.is_swa(il);
+            const bool il_is_recurrent = split_hparams.is_recurrent(il);
+            const bool il_is_swa       = split_hparams.is_swa(il);
             for (size_t il_prev = 0; il_prev < il; il_prev++) {
-                ret += hparams.is_recurrent(il_prev) == il_is_recurrent && hparams.is_swa(il_prev) == il_is_swa;
+                ret += split_hparams.is_recurrent(il_prev) == il_is_recurrent && split_hparams.is_swa(il_prev) == il_is_swa;
             }
             return ret;
         };
 
         uint32_t il;
         std::string prefix;
+        const llama_model * split_model = ud->model;
         size_t rotation;
         if (tensor_name.substr(0, 4) == "blk.") {
             const size_t length_prefix = tensor_name.find('.', 4);
             GGML_ASSERT(length_prefix != std::string::npos);
             prefix = tensor_name.substr(0, length_prefix + 1);
             il = std::stoull(tensor_name.substr(4, length_prefix));
-            rotation = get_il_eff(il) % ud->n_devices;
+            rotation = get_il_eff(split_model->hparams, il) % ud->n_devices;
+            if (ud->model->arch == LLM_ARCH_GEMMA4_ASSISTANT &&
+                    (std::regex_match(tensor_name, pattern_q_weight) ||
+                     std::regex_match(tensor_name, pattern_q_bias) ||
+                     std::regex_match(tensor_name, pattern_attn_out_weight))) {
+                const llama_model * target = ud->model->mtp_target_for_split ?
+                    ud->model->mtp_target_for_split : llama_mtp_target_for_split_loading;
+                if (target != nullptr) {
+                    const bool want_swa = ud->model->hparams.is_swa(il);
+                    int32_t il_target = -1;
+                    for (int32_t il_cur = 0; il_cur < (int32_t) target->hparams.n_layer; ++il_cur) {
+                        if (target->hparams.is_swa((uint32_t) il_cur) == want_swa) {
+                            il_target = il_cur;
+                        }
+                    }
+                    GGML_ASSERT(il_target >= 0);
+                    split_model = target;
+                    il = (uint32_t) il_target;
+                    rotation = get_il_eff(split_model->hparams, il) % ud->n_devices;
+                }
+            }
+        } else if (tensor_name.rfind("mtp.blk.", 0) == 0) {
+            const size_t il_start = 8;
+            const size_t length_prefix = tensor_name.find('.', il_start);
+            GGML_ASSERT(length_prefix != std::string::npos);
+            prefix = tensor_name.substr(0, length_prefix + 1);
+            il = std::stoull(tensor_name.substr(il_start, length_prefix - il_start));
+            rotation = get_il_eff(split_model->hparams, il) % ud->n_devices;
+            if (ud->model->arch == LLM_ARCH_GEMMA4_ASSISTANT &&
+                    (std::regex_match(tensor_name, pattern_q_weight) ||
+                     std::regex_match(tensor_name, pattern_q_bias) ||
+                     std::regex_match(tensor_name, pattern_attn_out_weight))) {
+                const llama_model * target = ud->model->mtp_target_for_split ?
+                    ud->model->mtp_target_for_split : llama_mtp_target_for_split_loading;
+                if (target != nullptr) {
+                    const bool want_swa = ud->model->hparams.is_swa(il);
+                    int32_t il_target = -1;
+                    for (int32_t il_cur = 0; il_cur < (int32_t) target->hparams.n_layer; ++il_cur) {
+                        if (target->hparams.is_swa((uint32_t) il_cur) == want_swa) {
+                            il_target = il_cur;
+                        }
+                    }
+                    GGML_ASSERT(il_target >= 0);
+                    split_model = target;
+                    il = (uint32_t) il_target;
+                    rotation = get_il_eff(split_model->hparams, il) % ud->n_devices;
+                }
+            }
         } else if (tensor_name.substr(0, 6) == "cache_") {
             const size_t layer_index_start = tensor_name.find("_l", 6);
             GGML_ASSERT(layer_index_start != std::string::npos);
             il = std::stoull(tensor_name.substr(layer_index_start + 2));
             prefix = "blk." + std::to_string(il) + ".";
-            rotation = get_il_eff(il) % ud->n_devices;
+            rotation = get_il_eff(split_model->hparams, il) % ud->n_devices;
         } else {
             il = 0;
-            rotation = hparams.n_layer % ud->n_devices;
+            rotation = split_model->hparams.n_layer % ud->n_devices;
         }
         const ggml_tensor * tensor_axis_0 = suffix.empty() ? tensor : ud->model->get_tensor((prefix + suffix).c_str());
         if (tensor_axis_0 == nullptr) {
@@ -401,7 +454,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             tensor_axis_0 = ud->model->get_tensor((prefix + suffix_fallback).c_str());
         }
         GGML_ASSERT(tensor_axis_0 != nullptr);
-        return {axis, tensor_axis_0, il, rotation};
+        return {axis, tensor_axis_0, split_model, il, rotation};
     };
 
     auto get_tensor_config = [&]() -> tensor_config {
@@ -485,19 +538,20 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
     };
 
-    auto get_split_segments = [&](int axis, uint32_t il) -> std::vector<int64_t> {
-        if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_QWEN35MOE) {
-            const int64_t head_k_dim = hparams.ssm_d_state;
-            const int64_t head_v_dim = hparams.ssm_d_state;
-            const int64_t n_k_heads  = hparams.ssm_n_group;
-            const int64_t n_v_heads  = hparams.ssm_dt_rank;
+    auto get_split_segments = [&](const llama_model * split_model, int axis, uint32_t il) -> std::vector<int64_t> {
+        const llama_hparams & split_hparams = split_model->hparams;
+        if (split_model->arch == LLM_ARCH_QWEN3NEXT || split_model->arch == LLM_ARCH_QWEN35 || split_model->arch == LLM_ARCH_QWEN35MOE) {
+            const int64_t head_k_dim = split_hparams.ssm_d_state;
+            const int64_t head_v_dim = split_hparams.ssm_d_state;
+            const int64_t n_k_heads  = split_hparams.ssm_n_group;
+            const int64_t n_v_heads  = split_hparams.ssm_dt_rank;
             const int64_t key_dim    = head_k_dim * n_k_heads;
             const int64_t value_dim  = head_v_dim * n_v_heads;
 
             // both Qwen 3 Next and Qwen 3.5 support n_v_heads > n_k_heads but the broadcasting pattern is different:
             //   - Qwen 3 Next: [k0_v0, k0_v1, k1_v2, k1_v3] (this is the default split pattern)
             //   - Qwen 3.5:    [k0_v0, k1_v1, k0_v2, k1_v3] (needs segmenting of V on the scale of K to get the correct pattern)
-            if (ud->model->arch == LLM_ARCH_QWEN3NEXT) {
+            if (split_model->arch == LLM_ARCH_QWEN3NEXT) {
                 if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_ssm_conv1d)) {
                     GGML_ASSERT(tensor->ne[axis] == 2*key_dim + value_dim);
                     return {key_dim, key_dim, value_dim};
@@ -516,7 +570,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                     return std::vector<int64_t>(head_ratio, n_k_heads);
                 }
                 if (std::regex_match(tensor_name, pattern_r_cache)) {
-                    return std::vector<int64_t>(2 + head_ratio, key_dim * (hparams.ssm_d_conv - 1));
+                    return std::vector<int64_t>(2 + head_ratio, key_dim * (split_hparams.ssm_d_conv - 1));
                 }
                 if (std::regex_match(tensor_name, pattern_s_cache)) {
                     return std::vector<int64_t>(head_ratio, n_k_heads * head_v_dim * head_v_dim);
@@ -525,7 +579,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
 
             // the FFN is the same for Qwen 3 Next and Qwen 3.5:
             if (std::regex_match(tensor_name, pattern_ffn_gate_up_weight)) {
-                const int64_t n_ff_exp = hparams.n_ff_exp;
+                const int64_t n_ff_exp = split_hparams.n_ff_exp;
                 GGML_ASSERT(tensor->ne[axis] == 2*n_ff_exp);
                 return {n_ff_exp, n_ff_exp};
             }
@@ -533,24 +587,25 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         }
 
         if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_qkv_bias)) {
-            const int64_t n_embd      = hparams.n_embd;
-            const int64_t n_embd_gqa  = hparams.n_embd_v_gqa(il);
-            GGML_ASSERT(hparams.n_embd_k_gqa() == n_embd_gqa);
+            const int64_t n_embd      = split_hparams.n_embd;
+            const int64_t n_embd_gqa  = split_hparams.n_embd_v_gqa(il);
+            GGML_ASSERT(split_hparams.n_embd_k_gqa() == n_embd_gqa);
             GGML_ASSERT(tensor->ne[axis] == n_embd + 2*n_embd_gqa);
             return {n_embd, n_embd_gqa, n_embd_gqa};
         }
         if (std::regex_match(tensor_name, pattern_ffn_gate_up_weight)) {
-            const int64_t n_ff_exp = hparams.n_ff_exp;
+            const int64_t n_ff_exp = split_hparams.n_ff_exp;
             GGML_ASSERT(tensor->ne[axis] == 2*n_ff_exp);
             return {n_ff_exp, n_ff_exp};
         }
         return {tensor->ne[axis]};
     };
 
-    auto get_split_granularity = [&](int64_t blck_size, uint32_t il, const std::vector<int64_t> & segments) -> std::vector<int64_t> {
-        if (hparams.is_recurrent(il)) {
+    auto get_split_granularity = [&](const llama_model * split_model, int64_t blck_size, uint32_t il, const std::vector<int64_t> & segments) -> std::vector<int64_t> {
+        const llama_hparams & split_hparams = split_model->hparams;
+        if (split_hparams.is_recurrent(il)) {
             // linear attention
-            const int64_t head_dim  = hparams.ssm_d_state;
+            const int64_t head_dim  = split_hparams.ssm_d_state;
             const int64_t granularity_qkv = std::lcm(blck_size, head_dim);
             if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_attn_gate_weight) ||
                     std::regex_match(tensor_name, pattern_ssm_conv1d) || std::regex_match(tensor_name, pattern_ssm_out_weight)) {
@@ -564,15 +619,15 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 return std::vector<int64_t>(segments.size(), 2 * (granularity_qkv / head_dim));
             }
             if (std::regex_match(tensor_name, pattern_r_cache)) {
-                return std::vector<int64_t>(segments.size(), granularity_qkv * (hparams.ssm_d_conv - 1));
+                return std::vector<int64_t>(segments.size(), granularity_qkv * (split_hparams.ssm_d_conv - 1));
             }
             if (std::regex_match(tensor_name, pattern_s_cache)) {
                 return std::vector<int64_t>(segments.size(), granularity_qkv * head_dim);
             }
         } else {
             // regular attention
-            const uint32_t n_gqa    = hparams.n_gqa(il);
-            const uint32_t n_embd_q = n_gqa * hparams.n_embd_head_k(il);
+            const uint32_t n_gqa    = split_hparams.n_gqa(il);
+            const uint32_t n_embd_q = n_gqa * split_hparams.n_embd_head_k(il);
             if (std::regex_match(tensor_name, pattern_attn_sinks)) {
                 GGML_ASSERT(segments.size() == 1);
                 return {std::lcm(n_embd_q, blck_size)/n_embd_q * n_gqa};
@@ -582,7 +637,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             if (std::regex_match(tensor_name, pattern_q_weight) || std::regex_match(tensor_name, pattern_q_bias)) {
                 GGML_ASSERT(segments.size() == 1);
                 // some models have Q gate tensors, for those cases the granularity needs to be doubled:
-                if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_QWEN35MOE) {
+                if (split_model->arch == LLM_ARCH_QWEN3NEXT || split_model->arch == LLM_ARCH_QWEN35 || split_model->arch == LLM_ARCH_QWEN35MOE) {
                     return {std::lcm(2*n_embd_q, blck_size)};
                 }
                 return {granularity_q};
@@ -624,7 +679,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     if (split_state.axis >= 0 && split_state.axis < GGML_MAX_DIMS) {
         const int64_t ne_full = tensor->ne[split_state.axis];
         const int64_t blck_size = ggml_blck_size(tc.tensor_axis_0->type);
-        const float * tensor_split = ud->model->tensor_split();
+        const float * tensor_split = tc.split_model->tensor_split();
         std::vector<float> tensor_split_scan;
         tensor_split_scan.reserve(ud->n_devices);
         for (size_t j = 0; j < ud->n_devices; j++) {
@@ -633,8 +688,8 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 tensor_split_scan[j] += tensor_split_scan[j - 1];
             }
         }
-        const std::vector<int64_t> segments = get_split_segments(split_state.axis, tc.il);
-        const std::vector<int64_t> granularity = get_split_granularity(blck_size, tc.il, segments);
+        const std::vector<int64_t> segments = get_split_segments(tc.split_model, split_state.axis, tc.il);
+        const std::vector<int64_t> granularity = get_split_granularity(tc.split_model, blck_size, tc.il, segments);
         for (size_t is = 0; is < segments.size(); is++) {
             const int64_t ne_s = segments[is];
             const int64_t g_s = granularity[is];
@@ -2325,6 +2380,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_GEMMA3:
         case LLM_ARCH_GEMMA3N:
         case LLM_ARCH_GEMMA4:
+        case LLM_ARCH_GEMMA4_ASSISTANT:
         case LLM_ARCH_GEMMA_EMBEDDING:
         case LLM_ARCH_STARCODER2:
         case LLM_ARCH_OPENELM:

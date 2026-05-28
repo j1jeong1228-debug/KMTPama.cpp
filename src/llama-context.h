@@ -135,6 +135,23 @@ struct llama_context {
             llama_memory_context_i * mctx,
                        ggml_status & ret);
 
+    bool ensure_sched_mtp();
+
+    llm_graph_result * process_ubatch_mtp(
+                const llama_ubatch & ubatch,
+            llama_memory_context_i * mctx,
+                       ggml_status & ret);
+
+    int32_t decode_mtp(
+            llama_seq_id seq_id,
+            llama_pos attn_pos,
+            llama_token last_token,
+            float * h_prev,
+            int32_t n_steps,
+            llama_token * out_drafts,
+            float * out_logits,
+            float * out_h_prev_last);
+
     int encode(const llama_batch & batch_inp);
     int decode(const llama_batch & batch_inp);
 
@@ -251,6 +268,13 @@ private:
             const llama_memory_context_i * mctx,
                           llm_graph_type   gtype) const;
 
+    llm_graph_params graph_params_mtp(
+                        llm_graph_result * res,
+                      const llama_ubatch & ubatch,
+            const llama_memory_context_i * mctx) const;
+
+    ggml_status graph_compute_mtp(ggml_cgraph * gf);
+
     llm_graph_cb graph_get_cb() const;
 
     // TODO: read/write lora adapters and cvec
@@ -349,6 +373,15 @@ private:
 
     llm_graph_result_ptr gf_res_prev;
     llm_graph_result_ptr gf_res_reserve;
+    llm_graph_result_ptr gf_res_prev_mtp;
+
+    ggml_backend_sched_ptr sched_mtp;
+
+    uint64_t mtp_sched_reserve_count = 0;
+    uint64_t mtp_sched_reset_count   = 0;
+    uint64_t mtp_graph_build_count   = 0;
+    uint64_t mtp_graph_alloc_count   = 0;
+    uint64_t mtp_graph_reuse_count   = 0;
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;

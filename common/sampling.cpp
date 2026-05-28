@@ -547,6 +547,26 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
     auto & chain = gsmpl->chain;
     auto & cur_p = gsmpl->cur_p; // initialized by set_logits
 
+    const auto backend_sample_passthrough = [&]() {
+        if (grmr) {
+            return false;
+        }
+        if (!rbudget) {
+            return true;
+        }
+        const auto state = common_reasoning_budget_get_state(rbudget);
+        return state == REASONING_BUDGET_IDLE || state == REASONING_BUDGET_DONE;
+    };
+
+    if (std::getenv("LLAMA_GEMMA4_MTP_VERIFY_TOP1_FAST") != nullptr) {
+        id = llama_get_sampled_token_ith(ctx, idx);
+        if (id != LLAMA_TOKEN_NULL && backend_sample_passthrough()) {
+            LOG_DBG("%s: Backend sampler selected token: '%d'. Will not run CPU samplers\n", __func__, id);
+
+            return id;
+        }
+    }
+
     gsmpl->set_logits(ctx, idx);
 
     // Check if a backend sampler has already sampled a token in which case we
@@ -554,11 +574,8 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
     {
         id = llama_get_sampled_token_ith(ctx, idx);
 
-        if (id != LLAMA_TOKEN_NULL) {
+        if (id != LLAMA_TOKEN_NULL && backend_sample_passthrough()) {
             LOG_DBG("%s: Backend sampler selected token: '%d'. Will not run any CPU samplers\n", __func__, id);
-
-            GGML_ASSERT(!gsmpl->grmr    && "using grammar in combination with backend sampling is not supported");
-            GGML_ASSERT(!gsmpl->rbudget && "using reasoning budget in combination with backend sampling is not supported");
 
             for (size_t i = 0; i < cur_p.size; ++i) {
                 if (cur_p.data[i].id == id) {

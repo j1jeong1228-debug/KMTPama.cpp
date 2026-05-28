@@ -573,6 +573,12 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED && src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
             return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, 1};
         }
+        if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+                (src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_2 || src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_3)) {
+            ggml_backend_meta_split_state ret = src_ss[1];
+            ret.n_segments = 1;
+            return ret;
+        }
         if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_1 && src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
             ggml_backend_meta_split_state ret = src_ss[0];
             ret.axis = GGML_BACKEND_SPLIT_AXIS_0;
@@ -584,9 +590,34 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             ret.n_segments = 1;
             return ret;
         }
+        if (src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_0 && src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+            return {assume_sync ? GGML_BACKEND_SPLIT_AXIS_MIRRORED : GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, 1};
+        }
         if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_0 && src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_0) {
             GGML_ASSERT(split_states_equal(src_ss[0], src_ss[1]));
             return {assume_sync ? GGML_BACKEND_SPLIT_AXIS_MIRRORED : GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, 1};
+        }
+        std::fprintf(stderr,
+                "ggml_backend_meta: MUL_MAT split-state mismatch tensor=%s src0=%s src1=%s\n",
+                tensor->name,
+                ggml_backend_meta_split_axis_name(src_ss[0].axis),
+                ggml_backend_meta_split_axis_name(src_ss[1].axis));
+        for (size_t i = 0; i < src_ss.size() && i < 2; ++i) {
+            const ggml_tensor * src = tensor->src[i];
+            if (src == nullptr) {
+                continue;
+            }
+            std::fprintf(stderr,
+                    "ggml_backend_meta:   mm_src%zu name=%s op=%s type=%s ne={%lld,%lld,%lld,%lld} axis=%s\n",
+                    i,
+                    src->name,
+                    ggml_op_name(src->op),
+                    ggml_type_name(src->type),
+                    (long long) src->ne[0],
+                    (long long) src->ne[1],
+                    (long long) src->ne[2],
+                    (long long) src->ne[3],
+                    ggml_backend_meta_split_axis_name(src_ss[i].axis));
         }
         GGML_ABORT("fatal error");
         //return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, 1};
@@ -610,6 +641,22 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
     };
 
     auto handle_reshape = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
+        // ggml_mul_mat_aux() is implemented as reshape_2d(cur) -> mul_mat(rot, ...) -> reshape_4d(original shape).
+        // For tensor-parallel quantized KV graphs the generic reshape heuristic can move the split from heads
+        // onto tokens. Preserve the original K/V tensor split for the auxiliary rotation path.
+        if (tensor->src[0] != nullptr && tensor->src[0]->op == GGML_OP_MUL_MAT &&
+                tensor->src[0]->src[0] != nullptr && tensor->src[0]->src[1] != nullptr &&
+                tensor->src[0]->src[1]->op == GGML_OP_RESHAPE && tensor->src[0]->src[1]->src[0] != nullptr) {
+            const ggml_tensor * rot      = tensor->src[0]->src[0];
+            const ggml_tensor * original = tensor->src[0]->src[1]->src[0];
+
+            if ((strstr(rot->name, "attn_inp_k_rot") != nullptr || strstr(rot->name, "attn_inp_v_rot") != nullptr) &&
+                    tensor->ne[0] == original->ne[0] && tensor->ne[1] == original->ne[1] &&
+                    tensor->ne[2] == original->ne[2] && tensor->ne[3] == original->ne[3]) {
+                return ggml_backend_meta_get_split_state(original, /*assume_sync =*/ true);
+            }
+        }
+
         switch (src_ss[0].axis) {
             case GGML_BACKEND_SPLIT_AXIS_0:
             case GGML_BACKEND_SPLIT_AXIS_1:
@@ -739,6 +786,31 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
     };
 
     auto handle_set_rows = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
+        if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_1 && src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_0 &&
+                tensor->src[2] != nullptr && ggml_is_quantized(tensor->src[2]->type)) {
+            // Quantized KV cache in tensor-parallel mode writes f32 rows into
+            // q8 cache shards. The simple graph slices src0 to the local row
+            // range below, so the SET_ROWS result follows the destination KV
+            // cache split instead of src0's temporary token-axis split.
+            GGML_ASSERT(tensor->src[0]->type == GGML_TYPE_F32);
+            GGML_ASSERT(tensor->src[0]->ne[0] == tensor->src[2]->ne[0]);
+            if (buf_ctx->debug > 0) {
+                GGML_LOG_ERROR(
+                        "META_SET_ROWS_QUANT_KV: tensor=%s op=%s type=%s src0=%s op=%s type=%s axis=%s src1=%s axis=%s src2=%s axis=%s\n",
+                        tensor->name,
+                        ggml_op_name(tensor->op),
+                        ggml_type_name(tensor->type),
+                        tensor->src[0] ? tensor->src[0]->name : "<null>",
+                        tensor->src[0] ? ggml_op_name(tensor->src[0]->op) : "<null>",
+                        tensor->src[0] ? ggml_type_name(tensor->src[0]->type) : "<null>",
+                        ggml_backend_meta_split_axis_name(src_ss[0].axis),
+                        tensor->src[1] ? tensor->src[1]->name : "<null>",
+                        ggml_backend_meta_split_axis_name(src_ss[1].axis),
+                        tensor->src[2] ? tensor->src[2]->name : "<null>",
+                        ggml_backend_meta_split_axis_name(src_ss[2].axis));
+            }
+            return src_ss[2];
+        }
         GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_1);
         GGML_ASSERT(src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED);
         GGML_ASSERT(split_states_equal(src_ss[0], src_ss[2]));
@@ -759,7 +831,62 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
     };
 
     auto handle_flash_attn_ext = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
-        GGML_ASSERT(                             src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_2);
+        const bool all_main_inputs_mirrored =
+            src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+            src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+            src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+            src_ss[3].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+            (tensor->src[4] == nullptr ||
+             src_ss[4].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED ||
+             src_ss[4].axis == GGML_BACKEND_SPLIT_AXIS_UNKNOWN);
+        if (all_main_inputs_mirrored) {
+            return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, 1};
+        }
+
+        const bool q_mirrored_for_split_kv =
+            src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+            src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_2 &&
+            src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_2 &&
+            src_ss[3].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+            tensor->src[0] != nullptr &&
+            tensor->src[1] != nullptr &&
+            tensor->src[2] != nullptr &&
+            std::strstr(tensor->src[1]->name, "cache_k_") != nullptr &&
+            std::strstr(tensor->src[2]->name, "cache_v_") != nullptr;
+
+        if ((src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_2 && !q_mirrored_for_split_kv) ||
+            src_ss[1].axis != GGML_BACKEND_SPLIT_AXIS_2 ||
+            src_ss[2].axis != GGML_BACKEND_SPLIT_AXIS_2 ||
+            (tensor->src[4] != nullptr && src_ss[3].axis != GGML_BACKEND_SPLIT_AXIS_MIRRORED) ||
+            (tensor->src[4] != nullptr && src_ss[4].axis != GGML_BACKEND_SPLIT_AXIS_0)) {
+            std::fprintf(stderr,
+                    "ggml_backend_meta: FLASH_ATTN_EXT split-state mismatch tensor=%s src0=%s src1=%s src2=%s src3=%s src4=%s\n",
+                    tensor->name,
+                    ggml_backend_meta_split_axis_name(src_ss[0].axis),
+                    ggml_backend_meta_split_axis_name(src_ss[1].axis),
+                    ggml_backend_meta_split_axis_name(src_ss[2].axis),
+                    ggml_backend_meta_split_axis_name(src_ss[3].axis),
+                    ggml_backend_meta_split_axis_name(src_ss[4].axis));
+            for (size_t i = 0; i < src_ss.size() && i < GGML_MAX_SRC; ++i) {
+                const ggml_tensor * src = tensor->src[i];
+                if (src == nullptr) {
+                    continue;
+                }
+                std::fprintf(stderr,
+                        "ggml_backend_meta:   src%zu name=%s op=%s type=%s ne={%lld,%lld,%lld,%lld} axis=%s\n",
+                        i,
+                        src->name,
+                        ggml_op_name(src->op),
+                        ggml_type_name(src->type),
+                        (long long) src->ne[0],
+                        (long long) src->ne[1],
+                        (long long) src->ne[2],
+                        (long long) src->ne[3],
+                        ggml_backend_meta_split_axis_name(src_ss[i].axis));
+            }
+        }
+
+        GGML_ASSERT(q_mirrored_for_split_kv || src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_2);
         GGML_ASSERT(                             src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_2);
         GGML_ASSERT(                             src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_2);
         GGML_ASSERT(tensor->src[4] == nullptr || src_ss[3].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED);
@@ -1019,7 +1146,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 split_state = {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, 1};
             } break;
         }
-        if (split_state.axis >= 0 && split_state.axis < GGML_MAX_DIMS) {
+        const bool set_rows_src_axis_1_dst_axis_0 =
+            tensor->op == GGML_OP_SET_ROWS && tensor->src[0] != nullptr && tensor->src[2] != nullptr &&
+            src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_1 && src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_0 &&
+            split_state.axis == GGML_BACKEND_SPLIT_AXIS_0 && ggml_is_quantized(tensor->src[2]->type);
+        if (!set_rows_src_axis_1_dst_axis_0 && split_state.axis >= 0 && split_state.axis < GGML_MAX_DIMS) {
             bool first_src_split_by_axis = true;
             const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(tensor->buffer);
 
@@ -1079,7 +1210,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 if (!srcs_info.empty()) {
                     srcs_info += ", ";
                 }
-                const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor->src[0], true);
+                const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(stc, tensor->src[i], true);
                 const char * axis_name = ggml_backend_meta_split_axis_name(split_state.axis);
                 std::string ne_info;
                 for (size_t j = 0; j < n_bufs; j++) {
@@ -1146,6 +1277,41 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
 
     std::vector<ggml_tensor *> simple_tensors;
     simple_tensors.reserve(n_simple_bufs);
+
+    const bool set_rows_src_axis_1_dst_axis_0 =
+        tensor->op == GGML_OP_SET_ROWS && tensor->src[0] != nullptr && tensor->src[2] != nullptr &&
+        split_state.axis == GGML_BACKEND_SPLIT_AXIS_0 && ggml_is_quantized(tensor->src[2]->type) &&
+        ggml_backend_meta_get_split_state(stc, tensor->src[0], /*assume_sync =*/ true).axis == GGML_BACKEND_SPLIT_AXIS_1 &&
+        ggml_backend_meta_get_split_state(stc, tensor->src[2], /*assume_sync =*/ true).axis == GGML_BACKEND_SPLIT_AXIS_0;
+    if (set_rows_src_axis_1_dst_axis_0) {
+        GGML_ASSERT(split_state.n_segments == 1);
+        GGML_ASSERT(tensor->src[0]->type == GGML_TYPE_F32);
+        GGML_ASSERT(tensor->src[0]->ne[0] == tensor->src[2]->ne[0]);
+    }
+
+    const ggml_backend_meta_split_state flash_attn_q_ss =
+        tensor->op == GGML_OP_FLASH_ATTN_EXT && tensor->src[0] != nullptr ?
+        ggml_backend_meta_get_split_state(stc, tensor->src[0], /*assume_sync =*/ true) :
+        ggml_backend_meta_split_state{GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, 1};
+    const ggml_backend_meta_split_state flash_attn_k_ss =
+        tensor->op == GGML_OP_FLASH_ATTN_EXT && tensor->src[1] != nullptr ?
+        ggml_backend_meta_get_split_state(stc, tensor->src[1], /*assume_sync =*/ true) :
+        ggml_backend_meta_split_state{GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, 1};
+    const ggml_backend_meta_split_state flash_attn_v_ss =
+        tensor->op == GGML_OP_FLASH_ATTN_EXT && tensor->src[2] != nullptr ?
+        ggml_backend_meta_get_split_state(stc, tensor->src[2], /*assume_sync =*/ true) :
+        ggml_backend_meta_split_state{GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, 1};
+    const bool flash_attn_slice_mirrored_q =
+        tensor->op == GGML_OP_FLASH_ATTN_EXT &&
+        tensor->src[0] != nullptr &&
+        tensor->src[1] != nullptr &&
+        tensor->src[2] != nullptr &&
+        flash_attn_q_ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+        flash_attn_k_ss.axis == GGML_BACKEND_SPLIT_AXIS_2 &&
+        flash_attn_v_ss.axis == GGML_BACKEND_SPLIT_AXIS_2 &&
+        tensor->src[1]->ne[2] != 0 &&
+        tensor->src[0]->ne[2] % tensor->src[1]->ne[2] == 0;
+
     for (size_t j = 0; j < n_simple_bufs; j++) {
         ggml_context          * simple_ctx = stc.ctxs[j].get();
         ggml_backend_buffer_t   simple_buf = buf_ctx->bufs[j].get();
@@ -1210,7 +1376,42 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
                 t_ij->src[i] = t_ij;
             } else if (t_ij->src[i] != nullptr && ggml_backend_buffer_is_meta(t_ij->src[i]->buffer)) {
                 t_ij->src[i] = ggml_backend_meta_buffer_simple_tensor(tensor->src[i], j);
+                if (i == 0 && set_rows_src_axis_1_dst_axis_0) {
+                    int64_t row_start = 0;
+                    for (size_t jj = 0; jj < j; jj++) {
+                        row_start += split_state.ne[jj];
+                    }
+                    ggml_tensor * src0_simple = t_ij->src[i];
+                    t_ij->src[i] = ggml_view_2d(simple_ctx, src0_simple,
+                            ne[0], src0_simple->ne[1], src0_simple->nb[1], row_start * src0_simple->nb[0]);
+                    ggml_set_name(t_ij->src[i], "meta_set_rows_src0_shard");
+                }
             }
+        }
+        if (flash_attn_slice_mirrored_q && t_ij->src[0] != nullptr && t_ij->src[1] != nullptr && t_ij->src[2] != nullptr) {
+            ggml_tensor * q_simple = t_ij->src[0];
+            int64_t kv_head_start = 0;
+            int64_t kv_head_count = 0;
+            for (size_t jj = 0; jj < n_simple_bufs; jj++) {
+                int64_t kv_ne_j = 0;
+                for (size_t s = 0; s < flash_attn_k_ss.n_segments; s++) {
+                    kv_ne_j += flash_attn_k_ss.ne[s*n_simple_bufs + jj];
+                }
+                if (jj < j) {
+                    kv_head_start += kv_ne_j;
+                } else if (jj == j) {
+                    kv_head_count = kv_ne_j;
+                }
+            }
+            const int64_t q_heads_per_kv = tensor->src[0]->ne[2] / tensor->src[1]->ne[2];
+            const int64_t q_head_start   = kv_head_start * q_heads_per_kv;
+            const int64_t q_head_count   = kv_head_count * q_heads_per_kv;
+            GGML_ASSERT(q_head_start + q_head_count <= q_simple->ne[2]);
+            t_ij->src[0] = ggml_view_4d(simple_ctx, q_simple,
+                    q_simple->ne[0], q_simple->ne[1], q_head_count, q_simple->ne[3],
+                    q_simple->nb[1], q_simple->nb[2], q_simple->nb[3],
+                    (size_t) q_head_start * q_simple->nb[2]);
+            ggml_set_name(t_ij->src[0], "meta_flash_attn_q_shard");
         }
 
         simple_tensors.push_back(t_ij);

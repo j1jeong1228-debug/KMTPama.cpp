@@ -6,6 +6,7 @@
 #include "fit.h"
 #include "log.h"
 #include "llama.h"
+#include "mtp.h"
 #include "sampling.h"
 #include "speculative.h"
 #include "unicode.h"
@@ -1206,6 +1207,28 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
 
     if (model_only) {
         return;
+    }
+
+    const bool spec_type_draft_mtp = std::find(params.speculative.types.begin(),
+                                        params.speculative.types.end(),
+                                        COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
+    if (spec_type_draft_mtp && !params.speculative.draft.mparams.path.empty()) {
+        auto params_mtp = params;
+        params_mtp.devices               = params.speculative.draft.devices;
+        params_mtp.model                 = params.speculative.draft.mparams;
+        params_mtp.n_gpu_layers          = params.speculative.draft.n_gpu_layers;
+        params_mtp.tensor_buft_overrides = params.speculative.draft.tensor_buft_overrides;
+
+        auto mparams_mtp = common_model_params_to_llama(params_mtp);
+        const int rc = common_mtp_assistant_load_from_file(model, params.speculative.draft.mparams.path.c_str(), mparams_mtp);
+        if (rc == 0) {
+            LOG_INF("%s: loaded attached MTP assistant '%s'\n", __func__, params.speculative.draft.mparams.path.c_str());
+        } else if (rc != -2) {
+            LOG_ERR("%s: failed to load attached MTP assistant '%s' (rc=%d)\n",
+                    __func__, params.speculative.draft.mparams.path.c_str(), rc);
+            pimpl->model.reset();
+            return;
+        }
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);

@@ -102,6 +102,25 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
     return res;
 }
 
+void llm_graph_input_mtp::set_input(const llama_ubatch * ubatch) {
+    GGML_ASSERT(ubatch && ubatch->n_tokens == 1);
+    GGML_ASSERT(ubatch->token);
+    GGML_ASSERT(ubatch->embd);
+    GGML_ASSERT(inp_last_token);
+    GGML_ASSERT(inp_h_prev);
+
+    ggml_backend_tensor_set(inp_last_token, ubatch->token, 0, sizeof(llama_token));
+
+    const int64_t n_embd_backbone = inp_h_prev->ne[0];
+    ggml_backend_tensor_set(inp_h_prev, ubatch->embd, 0, n_embd_backbone*sizeof(float));
+}
+
+bool llm_graph_input_mtp::can_reuse(const llm_graph_params & params) {
+    return params.gtype == LLM_GRAPH_TYPE_DECODER_MTP &&
+        inp_last_token && inp_last_token->ne[0] == 1 &&
+        inp_h_prev && inp_h_prev->ne[1] == 1;
+}
+
 void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && pos) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -823,6 +842,11 @@ void llm_graph_result::reset() {
     t_logits      = nullptr;
     t_embd        = nullptr;
     t_embd_pooled = nullptr;
+    t_argmax      = nullptr;
+    t_argmax_prob = nullptr;
+    t_h_pre_norm  = nullptr;
+    t_mtp_inp_last_token = nullptr;
+    t_mtp_inp_h_prev     = nullptr;
     t_sampled.clear();
     t_sampled_probs.clear();
     t_sampled_logits.clear();
@@ -863,6 +887,12 @@ void llm_graph_result::set_outputs() {
     }
     if (t_h_pre_norm != nullptr) {
         ggml_set_output(t_h_pre_norm);
+    }
+    if (t_argmax != nullptr) {
+        ggml_set_output(t_argmax);
+    }
+    if (t_argmax_prob != nullptr) {
+        ggml_set_output(t_argmax_prob);
     }
     for (auto & [seq_id, t] : t_sampled) {
         if (t != nullptr) {
@@ -2488,6 +2518,56 @@ ggml_tensor * llm_graph_context::build_attn(
 
     if (wo_b) {
         //cb(cur, "kqv_wo", il);
+    }
+
+    if (wo_b) {
+        cur = ggml_add(ctx0, cur, wo_b);
+    }
+
+    return cur;
+}
+
+ggml_tensor * llm_graph_context::build_attn_mtp(
+        llm_graph_input_attn_kv_iswa * inp,
+        ggml_tensor * wo,
+        ggml_tensor * wo_b,
+        ggml_tensor * wo_s,
+        ggml_tensor * q_cur,
+        ggml_tensor * kq_b,
+        ggml_tensor * sinks,
+        ggml_tensor * v_mla,
+            float     kq_scale,
+            int       il_mtp,
+        int32_t     il_kv_tgt,
+            bool     read_from_swa_kv) const {
+    auto * k_rot = read_from_swa_kv ? inp->self_k_rot_swa : inp->self_k_rot;
+    auto * v_rot = read_from_swa_kv ? inp->self_v_rot_swa : inp->self_v_rot;
+
+    if (k_rot) {
+        q_cur = ggml_mul_mat_aux(ctx0, q_cur, k_rot);
+    }
+
+    ggml_build_forward_expand(gf, q_cur);
+
+    const auto * mctx_iswa = inp->mctx;
+    const auto * mctx_cur  = read_from_swa_kv ? mctx_iswa->get_swa() : mctx_iswa->get_base();
+
+    const auto & kq_mask = read_from_swa_kv ? inp->get_kq_mask_swa() : inp->get_kq_mask();
+
+    ggml_tensor * q = q_cur;
+    ggml_tensor * k = mctx_cur->get_k(ctx0, il_kv_tgt);
+    ggml_tensor * v = mctx_cur->get_v(ctx0, il_kv_tgt);
+
+    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il_mtp);
+    cb(cur, "kqv_out_mtp", il_mtp);
+
+    if (v_rot) {
+        cur = ggml_mul_mat_aux(ctx0, cur, v_rot);
+    }
+
+    if (wo) {
+        cur = build_lora_mm(wo, cur, wo_s);
+        cb(cur, "mtp_wo_out", il_mtp);
     }
 
     if (wo_b) {

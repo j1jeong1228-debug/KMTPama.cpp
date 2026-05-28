@@ -1,5 +1,7 @@
 #include "models.h"
 
+#include <cstdlib>
+
 void llama_model_gemma4::load_arch_hparams(llama_model_loader & ml) {
     hparams.swa_type = LLAMA_SWA_TYPE_STANDARD;
     ml.get_key_or_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, hparams.swa_layers, hparams.n_layer);
@@ -132,6 +134,11 @@ void llama_model_gemma4::load_arch_tensors(llama_model_loader &) {
 }
 
 std::unique_ptr<llm_graph_context> llama_model_gemma4::build_arch_graph(const llm_graph_params & params) const {
+    if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
+        GGML_ASSERT(mtp_assistant && "Gemma 4 MTP requires llama_model_load_mtp_from_file()");
+        return std::make_unique<graph_mtp>(*this, *mtp_assistant, params);
+    }
+
     return std::make_unique<graph>(*this, params);
 }
 
@@ -372,6 +379,10 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
     }
     cur = inpL;
 
+    if (cparams.embeddings_pre_norm) {
+        res->t_h_pre_norm = cur;
+    }
+
     cur = build_norm(cur,
             model.output_norm, nullptr,
             LLM_NORM_RMS, -1);
@@ -389,9 +400,20 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
     }
 
     cb(cur, "result_output", -1);
-    res->t_logits = cur;
 
-    ggml_build_forward_expand(gf, cur);
+    const bool mtp_verify_top1_fast = std::getenv("LLAMA_GEMMA4_MTP_VERIFY_TOP1_FAST") != nullptr;
+    const bool mtp_verify_argmax_only = std::getenv("LLAMA_GEMMA4_MTP_VERIFY_ARGMAX_ONLY") != nullptr;
+    if (mtp_verify_top1_fast) {
+        ggml_tensor * arg = ggml_argmax(ctx0, cur);
+        cb(arg, "result_argmax", -1);
+        res->t_argmax = arg;
+        ggml_build_forward_expand(gf, arg);
+    }
+
+    if (!mtp_verify_argmax_only || !mtp_verify_top1_fast) {
+        res->t_logits = cur;
+        ggml_build_forward_expand(gf, cur);
+    }
 }
 
 // equivalent to get_per_layer_inputs() in python code

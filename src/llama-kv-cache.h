@@ -184,6 +184,9 @@ public:
     // return empty slot_info on failure
     slot_info find_slot(const llama_ubatch & ubatch, bool cont) const;
 
+    // Return a one-row view over the latest KV cell for an existing sequence.
+    slot_info mtp_slot_info(llama_seq_id seq_id) const;
+
     // emplace the ubatch context into slot: [sinfo.idxs[0...ubatch.n_tokens - 1]]
     void apply_ubatch(const slot_info & sinfo, const llama_ubatch & ubatch);
 
