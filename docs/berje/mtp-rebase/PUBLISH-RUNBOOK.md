@@ -21,47 +21,42 @@ This branch contains a local clean-clone rebase on upstream `b9374` (`491c4d7`).
 
 Do not publish `artifacts/` to GitHub. They include local command lines and transient API keys in captured LM Studio logs.
 
-## Remaining Local Publish Blockers
+## Publish Status
 
-The local commit failed because this checkout has no git identity:
+- Local commit created: `74bc26795e33eb17f3b849a9f34ad3027346cfc6`
+- Fork remote: `https://github.com/j1jeong1228-debug/KMTPama.cpp.git`
+- Pushed branch: `berje/b9374-gemma4-qwen-mtp-rebase`
+- Branch URL: `https://github.com/j1jeong1228-debug/KMTPama.cpp/tree/berje/b9374-gemma4-qwen-mtp-rebase`
+- PR creation URL: `https://github.com/j1jeong1228-debug/KMTPama.cpp/pull/new/berje/b9374-gemma4-qwen-mtp-rebase`
 
-```powershell
-git config user.name
-git config user.email
-```
+## Local Publish Notes
 
-The machine also does not have GitHub CLI `gh`, and `origin` points to `https://github.com/ggml-org/llama.cpp.git`.
-
-## User Setup Needed
-
-Set repository-local or global git identity:
+The machine still does not have GitHub CLI `gh`, so PR creation was not automated from the terminal. The commit was created with one-shot identity flags instead of changing global git config:
 
 ```powershell
-git config --global user.name "YOUR_NAME"
-git config --global user.email "YOUR_EMAIL"
+git -c user.name="berje" -c user.email="berje@users.noreply.github.com" commit -m "Port Gemma4 and Qwen MTP runtime on b9374"
 ```
 
-Add a fork remote before pushing:
+If the author identity needs to be changed later:
 
 ```powershell
-git remote add berje https://github.com/YOUR_GITHUB_ID/llama.cpp.git
+git commit --amend --reset-author
+git push --force-with-lease
 ```
 
-Install and authenticate GitHub CLI if PR creation from this machine is desired:
+Install and authenticate GitHub CLI only if PR creation from this machine is desired:
 
 ```powershell
 gh auth login
 ```
 
-## Commit/Push Commands After Setup
+## Republish Commands
 
 The intended tracked scope is code, docs, and scripts only. `artifacts/` should remain untracked.
 
 ```powershell
 git status --short --branch
-git diff --cached --check
-git commit -m "Port Gemma4 and Qwen MTP runtime on b9374"
-git push -u berje berje/b9374-gemma4-qwen-mtp-rebase
+git push fork berje/b9374-gemma4-qwen-mtp-rebase
 ```
 
 Open the PR against `ggml-org/llama.cpp` only if this experimental runtime branch is meant to be reviewed upstream. Otherwise keep it as a fork branch backup.
