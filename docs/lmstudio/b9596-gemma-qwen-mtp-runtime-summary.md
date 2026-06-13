@@ -88,6 +88,12 @@ Recycle Bin correction:
 - Required active models remained present after this correction: Gemma4 QAT target, Gemma4 QAT assistant, Qwen validation models, and target-only smoke model.
 - `CLEANUP-MANIFEST.json` now records Recycle Bin restore commands for recoverable payloads and marks model entries as not restore-available from the Recycle Bin.
 
+Recycle Bin emptied follow-up:
+
+- After the user emptied the Windows Recycle Bin, all cleanup payload roots were verified absent from both local trash paths and the Recycle Bin.
+- `CLEANUP-MANIFEST.json` now marks all cleanup payload entries as `restoreAvailable=false`.
+- Active b9596 runtime and required Gemma/Qwen model directories were rechecked and remained present.
+
 Post-cleanup smoke results:
 
 - Gemma4 QAT 9/6: pass, HTTP `200`, content `OK-QAT-MTP`, `36.52 tok/s`, acceptance `0.81429`

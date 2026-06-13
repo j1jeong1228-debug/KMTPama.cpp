@@ -43,9 +43,11 @@
                                  }
               },
     "windowsRecycleBin":  {
-                              "sentToWindowsRecycleBin":  "partial",
+                              "sentToWindowsRecycleBin":  "emptied",
                               "sentAt":  "2026-06-13T18:57:56.6933044+09:00",
-                              "confirmedPayloadRootCount":  2,
+                              "emptied":  true,
+                              "emptyVerifiedAt":  "2026-06-13T20:09:54.7568929+09:00",
+                              "confirmedPayloadRootCount":  0,
                               "payloadRootCount":  3,
                               "payloadRoots":  [
                                                    {
@@ -56,10 +58,12 @@
                                                        "sentToRecycleBin":  true,
                                                        "sentAt":  "2026-06-13T18:57:56.6933044+09:00",
                                                        "existsAfterRecycle":  false,
-                                                       "recycleBinMatches":  1,
-                                                       "recycleBinPath":  "C:\\$Recycle.Bin\\S-1-5-21-153129567-1343287152-4185832175-1001\\$RPPPC8D",
+                                                       "recycleBinMatches":  0,
+                                                       "recycleBinPath":  null,
                                                        "dateDeleted":  "\/Date(1781312251000)\/",
-                                                       "status":  "confirmed-in-windows-recycle-bin"
+                                                       "status":  "not-found-after-recycle-bin-emptied",
+                                                       "emptyVerifiedAt":  "2026-06-13T20:09:54.7568929+09:00",
+                                                       "note":  "Cannot restore b9596 cleanup payload: Windows Recycle Bin was emptied or contains no matching payload roots as of 2026-06-13T20:09:54.7568929+09:00. Active b9596 runtime and required Gemma/Qwen models were verified present."
                                                    },
                                                    {
                                                        "category":  "runtime-payload-root",
@@ -69,10 +73,12 @@
                                                        "sentToRecycleBin":  true,
                                                        "sentAt":  "2026-06-13T18:57:56.6933044+09:00",
                                                        "existsAfterRecycle":  false,
-                                                       "recycleBinMatches":  1,
-                                                       "recycleBinPath":  "C:\\$Recycle.Bin\\S-1-5-21-153129567-1343287152-4185832175-1001\\$RB3K5N3",
+                                                       "recycleBinMatches":  0,
+                                                       "recycleBinPath":  null,
                                                        "dateDeleted":  "\/Date(1781312252000)\/",
-                                                       "status":  "confirmed-in-windows-recycle-bin"
+                                                       "status":  "not-found-after-recycle-bin-emptied",
+                                                       "emptyVerifiedAt":  "2026-06-13T20:09:54.7568929+09:00",
+                                                       "note":  "Cannot restore b9596 cleanup payload: Windows Recycle Bin was emptied or contains no matching payload roots as of 2026-06-13T20:09:54.7568929+09:00. Active b9596 runtime and required Gemma/Qwen models were verified present."
                                                    },
                                                    {
                                                        "category":  "model-payload-root",
@@ -85,12 +91,14 @@
                                                        "recycleBinMatches":  0,
                                                        "recycleBinPath":  null,
                                                        "dateDeleted":  null,
-                                                       "status":  "not-found-in-windows-recycle-bin-after-send",
-                                                       "note":  "Windows FileSystem.DeleteDirectory(...SendToRecycleBin) returned without exception, but no Recycle Bin $I/$R metadata was created for this 52.31 GiB model payload. Observed C: Recycle Bin MaxCapacity entries include 49740 MB, below the payload size, so Windows likely bypassed the Recycle Bin for this oversized directory. Required b9596 Gemma/Qwen models were not in this payload and remain present."
+                                                       "status":  "not-found-after-recycle-bin-emptied",
+                                                       "note":  "Cannot restore b9596 cleanup payload: Windows Recycle Bin was emptied or contains no matching payload roots as of 2026-06-13T20:09:54.7568929+09:00. Active b9596 runtime and required Gemma/Qwen models were verified present.",
+                                                       "emptyVerifiedAt":  "2026-06-13T20:09:54.7568929+09:00"
                                                    }
                                                ],
-                              "restoreAllCommand":  "powershell -ExecutionPolicy Bypass -File \u0027C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\scripts\\restore-b9596-final-cleanup-from-recycle-bin.ps1\u0027 -Manifest \u0027C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-final-cleanup-20260613-150433\\CLEANUP-MANIFEST.json\u0027",
-                              "restorePayloadsCommand":  "powershell -ExecutionPolicy Bypass -File \u0027C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\scripts\\restore-b9596-final-cleanup-from-recycle-bin.ps1\u0027 -Manifest \u0027C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-final-cleanup-20260613-150433\\CLEANUP-MANIFEST.json\u0027 -PayloadOnly"
+                              "restoreAllCommand":  "powershell -ExecutionPolicy Bypass -Command \u0027throw \u0027\u0027Cannot restore b9596 cleanup payload: Windows Recycle Bin was emptied or contains no matching payload roots as of 2026-06-13T20:09:54.7568929+09:00. Active b9596 runtime and required Gemma/Qwen models were verified present.\u0027\u0027\u0027",
+                              "restorePayloadsCommand":  "powershell -ExecutionPolicy Bypass -Command \u0027throw \u0027\u0027Cannot restore b9596 cleanup payload: Windows Recycle Bin was emptied or contains no matching payload roots as of 2026-06-13T20:09:54.7568929+09:00. Active b9596 runtime and required Gemma/Qwen models were verified present.\u0027\u0027\u0027"
                           },
-    "postRecycleRisk":  "model-payload-not-retained-in-windows-recycle-bin; required active models verified present"
+    "postRecycleRisk":  "Recycle Bin emptied; cleanup payload roots are no longer restore-available. Active b9596 runtime and required Gemma/Qwen models verified present.",
+    "restoreAvailable":  false
 }

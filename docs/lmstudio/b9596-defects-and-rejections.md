@@ -158,4 +158,9 @@ Recycle Bin correction:
 - Repo artifact payload and runtime payload were confirmed in the Windows Recycle Bin.
 - Model payload was not confirmed in the Windows Recycle Bin after `SendToRecycleBin`; the `52.31 GiB` payload likely exceeded Recycle Bin capacity and is not restore-available from the manifest.
 - Required active model directories were rechecked and remained present.
-- `scripts/restore-b9596-final-cleanup-from-recycle-bin.ps1` was added for recoverable Recycle Bin payload restoration.
+
+After the Windows Recycle Bin was emptied:
+
+- Repo artifact payload, runtime payload, and model payload were all absent from local trash paths and from the Recycle Bin.
+- `CLEANUP-MANIFEST.json` was updated so every moved entry reports `restoreAvailable=false`.
+- Active b9596 runtime and required Gemma/Qwen model directories were verified present.
