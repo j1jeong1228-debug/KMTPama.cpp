@@ -172,6 +172,10 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_EMBEDDING_LENGTH,                  "%s.embedding_length"                  },
     { LLM_KV_EMBEDDING_LENGTH_OUT,              "%s.embedding_length_out"              },
     { LLM_KV_EMBEDDING_LENGTH_PER_LAYER,        "%s.embedding_length_per_layer_input"  },
+    { LLM_KV_BACKBONE_HIDDEN_SIZE,               "%s.backbone_embedding_length"         },
+    { LLM_KV_ASSISTANT_NUM_CENTROIDS,            "%s.centroid_count"                    },
+    { LLM_KV_ASSISTANT_CENTROID_TOP_K,           "%s.centroid_top_k"                    },
+    { LLM_KV_ASSISTANT_USE_ORDERED_EMBEDDINGS,   "%s.use_ordered_embeddings"            },
     { LLM_KV_FEATURES_LENGTH,                   "%s.features_length"                   },
     { LLM_KV_BLOCK_COUNT,                       "%s.block_count"                       },
     { LLM_KV_LEADING_DENSE_BLOCK_COUNT,         "%s.leading_dense_block_count"         },
@@ -463,6 +467,14 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_NEXTN_HNORM,                            "blk.%d.nextn.hnorm" },
     { LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,                 "blk.%d.nextn.shared_head_head" },
     { LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,                 "blk.%d.nextn.shared_head_norm" },
+    { LLM_TENSOR_ASSIST_PRE_PROJ,                        "mtp_pre_proj" },
+    { LLM_TENSOR_ASSIST_POST_PROJ,                       "mtp_post_proj" },
+    { LLM_TENSOR_ASSIST_PRE_PROJ_DOTTED,                 "mtp.pre_projection" },
+    { LLM_TENSOR_ASSIST_POST_PROJ_DOTTED,                "mtp.post_projection" },
+    { LLM_TENSOR_ASSIST_PRE_PROJ_NEXTN,                  "nextn.pre_projection" },
+    { LLM_TENSOR_ASSIST_POST_PROJ_NEXTN,                 "nextn.post_projection" },
+    { LLM_TENSOR_ASSIST_EMBED_CENTROIDS,                 "mtp.centroids" },
+    { LLM_TENSOR_ASSIST_TOKEN_ORDERING,                  "mtp.token_ordering" },
     { LLM_TENSOR_ATTN_SUB_NORM,                          "blk.%d.attn_sub_norm" },
     { LLM_TENSOR_FFN_SUB_NORM,                           "blk.%d.ffn_sub_norm" },
     { LLM_TENSOR_DEC_OUTPUT_NORM,                        "dec.output_norm" },
@@ -782,6 +794,14 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_NEXTN_HNORM,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_ASSIST_PRE_PROJ,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ASSIST_POST_PROJ,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ASSIST_PRE_PROJ_DOTTED,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ASSIST_POST_PROJ_DOTTED,    {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ASSIST_PRE_PROJ_NEXTN,      {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ASSIST_POST_PROJ_NEXTN,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ASSIST_EMBED_CENTROIDS,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ASSIST_TOKEN_ORDERING,      {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_NONE}},
     // Nemotron 3 Super
     // latent projections feed ggml_mul_mat, the buft probe must use MUL_MAT to keep them on GPU
     {LLM_TENSOR_FFN_LATENT_DOWN,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
@@ -838,6 +858,10 @@ const char * llm_arch_name(llm_arch arch) {
 }
 
 llm_arch llm_arch_from_string(const std::string & name) {
+    if (name == "gemma4_assistant" || name == "gemma4_mtp") {
+        return LLM_ARCH_GEMMA4_ASSISTANT;
+    }
+
     for (const auto & kv : LLM_ARCH_NAMES) { // NOLINT
         if (kv.second == name) {
             return kv.first;

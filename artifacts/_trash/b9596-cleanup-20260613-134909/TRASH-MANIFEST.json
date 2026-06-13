@@ -1,0 +1,43 @@
+﻿{
+    "timestamp":  "2026-06-13T13:49:09.7511326+09:00",
+    "repo":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime",
+    "trashRoot":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-cleanup-20260613-134909",
+    "moved":  [
+                  {
+                      "source":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-gemma-qat-assistant-q4-q8-compare-001",
+                      "destination":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-cleanup-20260613-134909\\lmstudio-b9596-gemma-qat-assistant-q4-q8-compare-001",
+                      "reason":  "Superseded by selected-q4-summary and curl compare evidence"
+                  },
+                  {
+                      "source":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-gemma-qat-assistant-q4-q8-compare-002",
+                      "destination":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-cleanup-20260613-134909\\lmstudio-b9596-gemma-qat-assistant-q4-q8-compare-002",
+                      "reason":  "Superseded by selected-q4-summary and curl compare evidence"
+                  },
+                  {
+                      "source":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-gemma-qat-assistant-q4-q8-compare-003",
+                      "destination":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-cleanup-20260613-134909\\lmstudio-b9596-gemma-qat-assistant-q4-q8-compare-003",
+                      "reason":  "Superseded by selected-q4-summary and curl compare evidence"
+                  },
+                  {
+                      "source":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\scripts\\compare-lmstudio-gemma-qat-assistants.ps1",
+                      "destination":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-cleanup-20260613-134909\\compare-lmstudio-gemma-qat-assistants.ps1",
+                      "reason":  "Non-curl harness was superseded by bounded curl harness"
+                  },
+                  {
+                      "source":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-goal-short-long-short-20260613-1350",
+                      "destination":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-cleanup-20260613-134909\\lmstudio-b9596-goal-short-long-short-20260613-1350",
+                      "reason":  "Invalid test artifact: generated 98036-token prompt against 65536 context; superseded by 20260613-1354 and long128 artifacts"
+                  }
+              ],
+    "missing":  [
+
+                ],
+    "retained":  [
+                     "artifacts\\lmstudio-b9596-gemma-qat-assistant-selected-q4-summary.json",
+                     "artifacts\\lmstudio-b9596-gemma-qat-assistant-completion-audit-smoke-001",
+                     "artifacts\\lmstudio-b9596-goal-smoke-20260613-1344",
+                     "artifacts\\lmstudio-b9596-qwen-native-q8-q4-001",
+                     "artifacts\\lmstudio-b9596-targetonly-qwen2-smoke-001",
+                     "scripts\\compare-lmstudio-gemma-qat-assistants-curl.ps1"
+                 ]
+}

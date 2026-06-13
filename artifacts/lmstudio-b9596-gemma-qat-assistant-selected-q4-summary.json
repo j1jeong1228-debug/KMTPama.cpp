@@ -1,0 +1,58 @@
+﻿{
+    "timestamp":  "2026-06-12T02:09:04.7365976+09:00",
+    "source_log":  "C:\\Users\\berje\\.lmstudio\\server-logs\\2026-06\\2026-06-12.1.log",
+    "selected":  "qat-q4",
+    "rationale":  "Q8 short was faster, but Q4 had better fresh long generation and acceptance; final automation is for long-context QAT attached MTP stability.",
+    "q4":  {
+               "short":  {
+                             "eval_tok_s":  40.83,
+                             "acceptance":  0.96923,
+                             "prompt_tokens":  36,
+                             "completion_tokens":  192,
+                             "evidence_line":  "0.25.492.463 I slot print_timing: id  0 | task 0 |        eval time =    4702.04 ms /   192 tokens (   24.49 ms per token,    40.83 tokens per second)"
+                         },
+               "long":  {
+                            "eval_tok_s":  28.96,
+                            "acceptance":  0.76,
+                            "prompt_tokens":  38646,
+                            "completion_tokens":  128,
+                            "evidence_line":  "1.20.926.643 I slot print_timing: id  0 | task 69 |        eval time =    4419.88 ms /   128 tokens (   34.53 ms per token,    28.96 tokens per second)"
+                        },
+               "long_best_observed":  {
+                                          "eval_tok_s":  30.5,
+                                          "acceptance":  0.83158,
+                                          "prompt_tokens":  38640,
+                                          "completion_tokens":  128,
+                                          "evidence_line":  "1.22.290.327 I slot print_timing: id  0 | task 69 |        eval time =    4197.04 ms /   128 tokens (   32.79 ms per token,    30.50 tokens per second)"
+                                      }
+           },
+    "q8":  {
+               "short":  {
+                             "eval_tok_s":  47.89,
+                             "acceptance":  0.96923,
+                             "prompt_tokens":  36,
+                             "completion_tokens":  192,
+                             "evidence_line":  "0.54.050.648 I slot print_timing: id  0 | task 0 |        eval time =    4009.19 ms /   192 tokens (   20.88 ms per token,    47.89 tokens per second)"
+                         },
+               "long":  {
+                            "eval_tok_s":  28.18,
+                            "acceptance":  0.73529,
+                            "prompt_tokens":  38646,
+                            "completion_tokens":  128,
+                            "evidence_line":  "2.39.263.685 I slot print_timing: id  0 | task 69 |        eval time =    4541.80 ms /   128 tokens (   35.48 ms per token,    28.18 tokens per second)"
+                        }
+           },
+    "quality":  {
+                    "q8_short_256_content":  "OK-QAT-MTP",
+                    "q4_final_smoke_content":  "OK-QAT-MTP",
+                    "note":  "128-token passkey checks ended in reasoning_content before final answer; 256-token smoke checks verify final content path."
+                },
+    "automation":  {
+                       "hardware_config":  "C:\\Users\\berje\\.lmstudio\\.internal\\hardware-config.json",
+                       "gemma4MtpAssistant":  "qat-q4",
+                       "tensor_split":  "9,6",
+                       "target":  "google/gemma-4-31b-qat",
+                       "assistant":  "C:\\Users\\berje\\.lmstudio\\models\\google\\gemma-4-31B-it-QAT-assistant-GGUF\\gemma-4-31B-it-QAT-assistant-Q4_0.gguf"
+                   },
+    "trash_manifest":  "C:\\Users\\berje\\.lmstudio\\model-trash\\gemma-qat-assistant-cleanup-20260612-020447\\TRASH-MANIFEST.json"
+}

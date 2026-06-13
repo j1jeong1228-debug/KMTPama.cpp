@@ -1,0 +1,45 @@
+﻿{
+    "artifact":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-targetonly-qwen2-smoke-001",
+    "model":  "spec-drafts-qwen2",
+    "runtime":  "2.20.9596",
+    "chatOk":  true,
+    "chatContent":  "OK",
+    "autoAttachPatternSummary":  [
+                                     {
+                                         "pattern":  "LMSTUDIO_GEMMA4",
+                                         "count":  0,
+                                         "firstLines":  [
+
+                                                        ]
+                                     },
+                                     {
+                                         "pattern":  "LMSTUDIO_QWEN",
+                                         "count":  0,
+                                         "firstLines":  [
+
+                                                        ]
+                                     },
+                                     {
+                                         "pattern":  "draft-mtp",
+                                         "count":  0,
+                                         "firstLines":  [
+
+                                                        ]
+                                     },
+                                     {
+                                         "pattern":  "common_speculative_init",
+                                         "count":  1,
+                                         "firstLines":  [
+                                                            "[2026-06-11 23:27:29][DEBUG] 0.04.077.551 W common_speculative_init: no implementations specified for speculative decoding"
+                                                        ]
+                                     },
+                                     {
+                                         "pattern":  "--mtp-head",
+                                         "count":  0,
+                                         "firstLines":  [
+
+                                                        ]
+                                     }
+                                 ],
+    "verdict":  "PASS: target-only control stayed target-only; no Gemma/Qwen auto policy, no --mtp-head, no draft-mtp attach; server logged common_speculative_init no implementations specified."
+}

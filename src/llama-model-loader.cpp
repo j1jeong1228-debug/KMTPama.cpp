@@ -267,6 +267,41 @@ namespace GGUFMeta {
     };
 }
 
+static std::vector<std::string> llama_model_loader_gemma4_assistant_kv_aliases(const LLM_KV & llm_kv, const std::string & key) {
+    if (llm_kv.arch != LLM_ARCH_GEMMA4_ASSISTANT) {
+        return {};
+    }
+
+    static const std::vector<std::string> from_prefixes = {
+        "gemma4-assistant.",
+        "gemma4_mtp.",
+    };
+    static const std::string to_prefix = "gemma4_assistant.";
+
+    std::string suffix;
+    for (const auto & from_prefix : from_prefixes) {
+        if (key.rfind(from_prefix, 0) == 0) {
+            suffix = key.substr(from_prefix.size());
+            break;
+        }
+    }
+    if (suffix.empty()) {
+        return {};
+    }
+
+    std::vector<std::string> aliases;
+    aliases.push_back(to_prefix + suffix);
+
+    if (suffix == "backbone_embedding_length") {
+        aliases.push_back(to_prefix + "n_embd_backbone");
+        aliases.push_back(to_prefix + "embedding_length_per_layer_input");
+    } else if (suffix == "centroid_count") {
+        aliases.push_back(to_prefix + "n_centroids");
+    }
+
+    return aliases;
+}
+
     template<typename T>
     typename std::enable_if<std::is_integral<T>::value, bool>::type
     llama_model_loader::get_arr_n(const std::string & key, T & result, bool required) {
@@ -290,7 +325,19 @@ namespace GGUFMeta {
     template<typename T>
     typename std::enable_if<std::is_integral<T>::value, bool>::type
     llama_model_loader::get_arr_n(enum llm_kv kid, T & result, bool required) {
-        return get_arr_n(llm_kv(kid), result, required);
+        const std::string key = llm_kv(kid);
+        if (get_arr_n(key, result, false)) {
+            return true;
+        }
+        for (const auto & alias : llama_model_loader_gemma4_assistant_kv_aliases(llm_kv, key)) {
+            if (get_arr_n(alias, result, false)) {
+                return true;
+            }
+        }
+        if (required) {
+            throw std::runtime_error(format("key not found in model: %s", key.c_str()));
+        }
+        return false;
     }
 
     template bool llama_model_loader::get_arr_n(enum llm_kv kid, uint32_t & result, bool required);
@@ -389,7 +436,19 @@ namespace GGUFMeta {
 
     template<typename T>
     bool llama_model_loader::get_arr(enum llm_kv kid, T & result, bool required) {
-        return get_arr(llm_kv(kid), result, required);
+        const std::string key = llm_kv(kid);
+        if (get_arr(key, result, false)) {
+            return true;
+        }
+        for (const auto & alias : llama_model_loader_gemma4_assistant_kv_aliases(llm_kv, key)) {
+            if (get_arr(alias, result, false)) {
+                return true;
+            }
+        }
+        if (required) {
+            throw std::runtime_error(format("array key not found in model: %s", key.c_str()));
+        }
+        return false;
     }
 
     template bool llama_model_loader::get_arr<std::vector<std::string>>(enum llm_kv kid, std::vector<std::string> & result, bool required);
@@ -413,7 +472,19 @@ namespace GGUFMeta {
 
     template<typename T>
     bool llama_model_loader::get_key(enum llm_kv kid, T & result, bool required) {
-        return get_key(llm_kv(kid), result, required);
+        const std::string key = llm_kv(kid);
+        if (get_key(key, result, false)) {
+            return true;
+        }
+        for (const auto & alias : llama_model_loader_gemma4_assistant_kv_aliases(llm_kv, key)) {
+            if (get_key(alias, result, false)) {
+                return true;
+            }
+        }
+        if (required) {
+            throw std::runtime_error(format("key not found in model: %s", key.c_str()));
+        }
+        return false;
     }
 
     template bool llama_model_loader::get_key<bool>       (enum llm_kv kid, bool & result,        bool required);
@@ -476,7 +547,19 @@ namespace GGUFMeta {
 
     template<typename T>
     bool llama_model_loader::get_key_or_arr(enum llm_kv kid, T & result, uint32_t n, bool required) {
-        return get_key_or_arr(llm_kv(kid), result, n, required);
+        const std::string key = llm_kv(kid);
+        if (get_key_or_arr(key, result, n, false)) {
+            return true;
+        }
+        for (const auto & alias : llama_model_loader_gemma4_assistant_kv_aliases(llm_kv, key)) {
+            if (get_key_or_arr(alias, result, n, false)) {
+                return true;
+            }
+        }
+        if (required) {
+            throw std::runtime_error(format("key not found in model: %s", key.c_str()));
+        }
+        return false;
     }
 
     bool llama_model_loader::get_key_or_arr(enum llm_kv kid, uint32_t & result, bool required) {

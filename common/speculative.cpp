@@ -159,6 +159,8 @@ struct common_speculative_impl {
 
     virtual void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) = 0;
 
+    virtual void reset_seq(llama_seq_id /*seq_id*/) {}
+
     // true if this implementation requires the target context to extract post-norm embeddings
     virtual bool need_embd() const = 0;
 
@@ -544,6 +546,17 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     "Drafts may degrade.\n",
                     __func__, (int) pos_max, N - 1);
         }
+    }
+
+    void reset_seq(llama_seq_id seq_id) override {
+        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
+            return;
+        }
+
+        std::fill(pending_h[seq_id].begin(), pending_h[seq_id].end(), 0.0f);
+        verify_h[seq_id].clear();
+        verify_h_rows[seq_id] = 0;
+        last_n_drafted[seq_id] = 0;
     }
 
     bool process(const llama_batch & batch_in) override {
@@ -1518,6 +1531,28 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
         common_time_meas tm(impl->t_begin_us, !impl->gen_perf);
         impl->begin(seq_id, prompt);
         impl->n_call_begin++;
+    }
+}
+
+void common_speculative_reset_seq(common_speculative * spec, llama_seq_id seq_id) {
+    if (spec == nullptr) {
+        return;
+    }
+
+    if (seq_id >= 0 && seq_id < (llama_seq_id) spec->dparams.size()) {
+        auto & dp = spec->dparams[seq_id];
+        dp.drafting = false;
+        dp.n_max = -1;
+        dp.n_past = 0;
+        dp.id_last = LLAMA_TOKEN_NULL;
+        if (dp.result) {
+            dp.result->clear();
+        }
+        spec->impl_last[seq_id] = nullptr;
+    }
+
+    for (auto & impl : spec->impls) {
+        impl->reset_seq(seq_id);
     }
 }
 

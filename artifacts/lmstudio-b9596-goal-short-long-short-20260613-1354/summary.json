@@ -1,0 +1,40 @@
+﻿{
+    "timestamp":  "2026-06-13T13:57:58.0112457+09:00",
+    "artifact":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-goal-short-long-short-20260613-1354",
+    "runtime":  "2.20.9596-gemma4-qwen-mtp-b9596-candidate",
+    "model":  "google/gemma-4-31b-qat",
+    "assistant":  "qat-q4",
+    "split":  "9,6",
+    "note":  "Current live config after stale Q8 override removal; long completion stopped after 12 tokens, so use long128 artifact for main long generation gate.",
+    "short1":  {
+                   "prompt_tokens":  33,
+                   "completion_tokens":  81,
+                   "eval_tok_s":  47.32,
+                   "acceptance":  0.82258,
+                   "content":  "OK-QAT-MTP",
+                   "http":  200
+               },
+    "long_true32k_short_completion":  {
+                                          "prompt_tokens":  32236,
+                                          "completion_tokens":  12,
+                                          "eval_tok_s":  34.48,
+                                          "acceptance":  1,
+                                          "content":  "OK-QAT-MTP",
+                                          "http":  200,
+                                          "prompt_eval_ms":  39382.49
+                                      },
+    "short2_after_long":  {
+                              "prompt_tokens":  33,
+                              "completion_tokens":  65,
+                              "eval_tok_s":  38.75,
+                              "acceptance":  0.83333,
+                              "content":  "OK-QAT-MTP",
+                              "http":  200
+                          },
+    "pass":  {
+                 "short1_36_plus":  true,
+                 "true32k_processed":  true,
+                 "short_after_long_not_collapsed":  true,
+                 "stale_override_absent":  true
+             }
+}

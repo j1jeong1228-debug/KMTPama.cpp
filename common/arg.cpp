@@ -23,13 +23,16 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cinttypes>
 #include <climits>
 #include <cstdarg>
+#include <cstdlib>
 #include <fstream>
 #include <list>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread> // for hardware_concurrency
 #include <vector>
@@ -486,6 +489,916 @@ bool common_params_handle_models(common_params & params, llama_example curr_ex) 
     }
 }
 
+static void common_lmstudio_setenv_if_empty(const char * name, const char * value) {
+    if (std::getenv(name) != nullptr) {
+        return;
+    }
+
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 0);
+#endif
+}
+
+static void common_lmstudio_setenv(const char * name, const char * value) {
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+static void common_lmstudio_unsetenv(const char * name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+static bool common_lmstudio_getenv_int(const char * name, int & value) {
+    const char * raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') {
+        return false;
+    }
+
+    try {
+        value = std::stoi(raw);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static std::vector<ggml_backend_dev_t> parse_device_list(const std::string & value);
+
+static std::string common_lmstudio_to_lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return (char) std::tolower(c);
+    });
+    return value;
+}
+
+static std::string common_lmstudio_env_lower(const char * name) {
+    const char * raw = std::getenv(name);
+    return raw != nullptr ? common_lmstudio_to_lower(raw) : "";
+}
+
+static bool common_lmstudio_file_exists(const std::string & path) {
+    if (path.empty()) {
+        return false;
+    }
+
+    std::ifstream file(path);
+    return (bool) file;
+}
+
+static std::string common_lmstudio_trim(std::string value) {
+    const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char c) {
+        return std::isspace(c) != 0;
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char c) {
+        return std::isspace(c) != 0;
+    }).base();
+
+    if (first >= last) {
+        return "";
+    }
+
+    return std::string(first, last);
+}
+
+static std::string common_lmstudio_model_spec(const common_params & params) {
+    return common_lmstudio_to_lower(params.model.path + " " + params.model.name + " " + params.model.hf_repo);
+}
+
+static bool common_lmstudio_has_explicit_spec(const common_params & params) {
+    if (!params.speculative.draft.mparams.path.empty() ||
+        !params.speculative.draft.mparams.hf_repo.empty() ||
+        !params.speculative.draft.mparams.url.empty()) {
+        return true;
+    }
+
+    return std::any_of(params.speculative.types.begin(), params.speculative.types.end(), [](enum common_speculative_type type) {
+        return type != COMMON_SPECULATIVE_TYPE_NONE;
+    });
+}
+
+static bool common_lmstudio_has_explicit_draft_model(const common_params & params) {
+    return !params.speculative.draft.mparams.path.empty() ||
+           !params.speculative.draft.mparams.hf_repo.empty() ||
+           !params.speculative.draft.mparams.url.empty();
+}
+
+static bool common_lmstudio_has_explicit_spec_type(const common_params & params) {
+    return std::any_of(params.speculative.types.begin(), params.speculative.types.end(), [](enum common_speculative_type type) {
+        return type != COMMON_SPECULATIVE_TYPE_NONE;
+    });
+}
+
+static bool common_gemma4_mtp_is_lmstudio_mtp_model_key(const common_params & params) {
+    const std::string model_spec = common_lmstudio_model_spec(params);
+
+    return model_spec.find("gemma-4-31b-mtp")     != std::string::npos ||
+           model_spec.find("gemma-4-31b-it-qat") != std::string::npos ||
+           model_spec.find("gemma-4-31b-qat")    != std::string::npos ||
+           (model_spec.find("gemma-4-31b") != std::string::npos &&
+            model_spec.find("qat")         != std::string::npos);
+}
+
+static bool common_qwen36_is_model(const common_params & params) {
+    const std::string model_spec = common_lmstudio_model_spec(params);
+
+    return model_spec.find("qwen") != std::string::npos &&
+           (model_spec.find("qwen3.6") != std::string::npos || model_spec.find("qwen3-6") != std::string::npos);
+}
+
+static bool common_qwen36_mtp_is_model(const common_params & params) {
+    return common_qwen36_is_model(params) &&
+           common_lmstudio_model_spec(params).find("mtp") != std::string::npos;
+}
+
+static std::string common_lmstudio_model_ref_to_path(const std::string & raw_path, const std::string & model_root) {
+    std::string path = common_lmstudio_trim(raw_path);
+    if (path.empty()) {
+        return "";
+    }
+
+    if ((path.front() == '"' && path.back() == '"') ||
+        (path.front() == '\'' && path.back() == '\'')) {
+        path = path.substr(1, path.size() - 2);
+    }
+
+    std::replace(path.begin(), path.end(), '/', '\\');
+
+    if (path.size() > 2 && path[1] == ':') {
+        return path;
+    }
+
+    if (path.rfind("\\\\", 0) == 0) {
+        return path;
+    }
+
+    return model_root + path;
+}
+
+static std::string common_lmstudio_json_string_key(const json & root, const char * key) {
+    if (!root.is_object() || !root.contains(key) || !root[key].is_string()) {
+        return "";
+    }
+
+    return root[key].get<std::string>();
+}
+
+static std::string common_gemma4_mtp_assistant_choice_to_path(
+        const std::string & raw_choice,
+        const std::string & model_root,
+        std::string & source) {
+    const std::string choice = common_lmstudio_to_lower(common_lmstudio_trim(raw_choice));
+    if (choice.empty() || choice == "auto" || choice == "default") {
+        return "";
+    }
+
+    if (choice == "qat-q8" || choice == "janvitos-q8" || choice == "q8") {
+        source = "hardware-config-qat-q8";
+        return model_root + "Janvitos\\gemma-4-31B-it-qat-assistant-MTP-Q8_0-GGUF\\gemma-4-31B-it-qat-assistant-MTP-Q8_0.gguf";
+    }
+
+    if (choice == "qat-q4" || choice == "google-qat-q4" || choice == "q4") {
+        source = "hardware-config-qat-q4";
+        return model_root + "google\\gemma-4-31B-it-QAT-assistant-GGUF\\gemma-4-31B-it-QAT-assistant-Q4_0.gguf";
+    }
+
+    source = "hardware-config-path";
+    return common_lmstudio_model_ref_to_path(raw_choice, model_root);
+}
+
+static std::string common_lmstudio_extract_gemma4_assistant_choice(const json & value) {
+    std::string raw = common_lmstudio_json_string_key(value, "gemma4MtpAssistant");
+    if (raw.empty()) {
+        raw = common_lmstudio_json_string_key(value, "gemma4MtpAssistantPath");
+    }
+    if (raw.empty()) {
+        raw = common_lmstudio_json_string_key(value, "gemma4MtpDraftModel");
+    }
+    return raw;
+}
+
+static std::string common_gemma4_mtp_hardware_config_assistant_path(
+        const std::string & model_root,
+        const char * user_profile,
+        std::string & source) {
+    if (std::getenv("LMSTUDIO_MTP_HARDWARE_CONFIG_DISABLE") != nullptr) {
+        return "";
+    }
+
+    const std::string hardware_config_path = std::string(user_profile) + "\\.lmstudio\\.internal\\hardware-config.json";
+    std::ifstream file(hardware_config_path);
+    if (!file) {
+        return "";
+    }
+
+    auto choice_to_path = [&](const json & value) {
+        const std::string raw = common_lmstudio_extract_gemma4_assistant_choice(value);
+        return common_gemma4_mtp_assistant_choice_to_path(raw, model_root, source);
+    };
+
+    try {
+        const json root = json::parse(file);
+
+        std::string path = choice_to_path(root);
+        if (!path.empty()) {
+            return path;
+        }
+
+        if (!root.contains("json") || !root["json"].is_array()) {
+            return "";
+        }
+
+        auto try_backend_entries = [&](bool prefer_current_runtime) {
+            for (const auto & backend_entry : root["json"]) {
+                if (!backend_entry.is_array() || backend_entry.size() < 2 || !backend_entry[1].is_object()) {
+                    continue;
+                }
+                if (prefer_current_runtime) {
+                    if (!backend_entry[0].is_string() ||
+                        backend_entry[0].get<std::string>() != "llama.cpp-win-x86_64-nvidia-cuda-avx2") {
+                        continue;
+                    }
+                }
+
+                const auto & backend_config = backend_entry[1];
+                if (!backend_config.contains("fields") || !backend_config["fields"].is_array()) {
+                    continue;
+                }
+
+                for (const auto & field : backend_config["fields"]) {
+                    if (!field.is_object() || !field.contains("key") || !field["key"].is_string() || !field.contains("value")) {
+                        continue;
+                    }
+                    if (field["key"].get<std::string>() != "load.gpuSplitConfig") {
+                        continue;
+                    }
+
+                    path = choice_to_path(field["value"]);
+                    if (!path.empty()) {
+                        return path;
+                    }
+                }
+            }
+            return std::string();
+        };
+
+        path = try_backend_entries(true);
+        if (!path.empty()) {
+            return path;
+        }
+
+        return try_backend_entries(false);
+    } catch (const std::exception & e) {
+        LOG_WRN("LMSTUDIO_GEMMA4_MTP_ASSISTANT_HARDWARE_CONFIG_B9596: failed to parse %s: %s\n",
+                hardware_config_path.c_str(), e.what());
+    }
+
+    return "";
+}
+
+static std::string common_gemma4_mtp_assistant_override_path(const std::string & model_root, const char * user_profile, std::string & source) {
+    const char * env_path = std::getenv("LMSTUDIO_GEMMA4_MTP_ASSISTANT_PATH");
+    if (env_path != nullptr && env_path[0] != '\0') {
+        source = "env";
+        return common_lmstudio_model_ref_to_path(env_path, model_root);
+    }
+
+    const std::string hardware_config_path =
+        common_gemma4_mtp_hardware_config_assistant_path(model_root, user_profile, source);
+    if (!hardware_config_path.empty()) {
+        return hardware_config_path;
+    }
+
+    const std::string override_file =
+        std::string(user_profile) + "\\.lmstudio\\.internal\\gemma4-mtp-draft-override.json";
+    std::ifstream file(override_file);
+    if (!file) {
+        return "";
+    }
+
+    try {
+        const json root = json::parse(file);
+        std::string raw =
+            common_lmstudio_json_string_key(root, "draftModelPath");
+        if (raw.empty()) {
+            raw = common_lmstudio_json_string_key(root, "assistantPath");
+        }
+        if (raw.empty()) {
+            raw = common_lmstudio_json_string_key(root, "path");
+        }
+        if (raw.empty()) {
+            raw = common_lmstudio_json_string_key(root, "draftModel");
+        }
+        if (!raw.empty()) {
+            source = "override-json";
+            return common_lmstudio_model_ref_to_path(raw, model_root);
+        }
+    } catch (const std::exception & e) {
+        LOG_WRN("LMSTUDIO_GEMMA4_MTP_ASSISTANT_OVERRIDE_B9596: failed to parse %s: %s\n",
+                override_file.c_str(), e.what());
+    }
+
+    return "";
+}
+
+static std::string common_gemma4_mtp_default_assistant_path(std::string & assistant_source) {
+    const char * user_profile = std::getenv("USERPROFILE");
+    if (user_profile == nullptr || user_profile[0] == '\0') {
+        return "";
+    }
+
+    const std::string model_root = std::string(user_profile) + "\\.lmstudio\\models\\";
+
+    const std::string override_path = common_gemma4_mtp_assistant_override_path(model_root, user_profile, assistant_source);
+    if (!override_path.empty()) {
+        if (common_lmstudio_file_exists(override_path)) {
+            return override_path;
+        }
+
+        LOG_WRN("LMSTUDIO_GEMMA4_MTP_ASSISTANT_OVERRIDE_B9596: configured assistant missing, falling back; source=%s path=%s\n",
+                assistant_source.c_str(), override_path.c_str());
+        assistant_source.clear();
+    }
+
+    const std::string qat_q4 =
+        model_root + "google\\gemma-4-31B-it-QAT-assistant-GGUF\\gemma-4-31B-it-QAT-assistant-Q4_0.gguf";
+    if (common_lmstudio_file_exists(qat_q4)) {
+        assistant_source = "default-google-qat-q4";
+        return qat_q4;
+    }
+
+    const std::string simplepotat_qat =
+        model_root + "Simplepotat\\gemma-4-31b-it-qat-q4_0-assistant-gguf\\gemma-4-31b-it-qat-q4_0-assistant.gguf";
+    if (common_lmstudio_file_exists(simplepotat_qat)) {
+        assistant_source = "default-simplepotat-qat-q4";
+        return simplepotat_qat;
+    }
+
+    const std::string atomic_q4 =
+        model_root + "AtomicChat\\gemma-4-31B-it-assistant-GGUF\\gemma-4-31B-it-assistant.Q4_K_M.gguf";
+    if (common_lmstudio_file_exists(atomic_q4)) {
+        assistant_source = "default-atomic-q4";
+        return atomic_q4;
+    }
+
+    assistant_source = "default-radamanthys-q8";
+    return model_root + "Radamanthys11\\Gemma-4-31B-it-assistant-GGUF\\gemma-4-31B-it-assistant-Q8_0.gguf";
+}
+
+static std::string common_gemma4_mtp_matched_qat_target_path() {
+    const char * user_profile = std::getenv("USERPROFILE");
+    if (user_profile == nullptr || user_profile[0] == '\0') {
+        return "";
+    }
+
+    const std::string model_root = std::string(user_profile) + "\\.lmstudio\\models\\";
+    return model_root + "lmstudio-community\\gemma-4-31B-it-QAT-GGUF\\gemma-4-31B-it-QAT-Q4_0.gguf";
+}
+
+static bool common_lmstudio_extract_gpu_split(const json & value, std::vector<float> & custom_ratio, bool & experimental_tensor_internal) {
+    if (!value.is_object() || !value.contains("customRatio") || !value["customRatio"].is_array()) {
+        return false;
+    }
+
+    custom_ratio.clear();
+    for (const auto & item : value["customRatio"]) {
+        if (!item.is_number()) {
+            return false;
+        }
+        custom_ratio.push_back(item.get<float>());
+    }
+
+    experimental_tensor_internal = false;
+    if (value.contains("experimentalTensorInternal") && value["experimentalTensorInternal"].is_boolean()) {
+        experimental_tensor_internal = value["experimentalTensorInternal"].get<bool>();
+    }
+
+    return std::any_of(custom_ratio.begin(), custom_ratio.end(), [](float v) {
+        return v > 0.0f;
+    });
+}
+
+static bool common_lmstudio_read_hardware_config_split(std::vector<float> & custom_ratio, bool & experimental_tensor_internal) {
+    if (std::getenv("LMSTUDIO_MTP_HARDWARE_CONFIG_DISABLE") != nullptr) {
+        return false;
+    }
+
+    const char * user_profile = std::getenv("USERPROFILE");
+    if (user_profile == nullptr || user_profile[0] == '\0') {
+        return false;
+    }
+
+    const std::string hardware_config_path = std::string(user_profile) + "\\.lmstudio\\.internal\\hardware-config.json";
+    std::ifstream file(hardware_config_path);
+    if (!file) {
+        return false;
+    }
+
+    try {
+        json root = json::parse(file);
+        if (common_lmstudio_extract_gpu_split(root, custom_ratio, experimental_tensor_internal)) {
+            return true;
+        }
+
+        if (!root.contains("json") || !root["json"].is_array()) {
+            return false;
+        }
+
+        auto try_backend_entries = [&](bool prefer_current_runtime) {
+            for (const auto & backend_entry : root["json"]) {
+                if (!backend_entry.is_array() || backend_entry.size() < 2 || !backend_entry[1].is_object()) {
+                    continue;
+                }
+                if (prefer_current_runtime) {
+                    if (!backend_entry[0].is_string() ||
+                        backend_entry[0].get<std::string>() != "llama.cpp-win-x86_64-nvidia-cuda-avx2") {
+                        continue;
+                    }
+                }
+
+                const auto & backend_config = backend_entry[1];
+                if (!backend_config.contains("fields") || !backend_config["fields"].is_array()) {
+                    continue;
+                }
+
+                for (const auto & field : backend_config["fields"]) {
+                    if (!field.is_object() || !field.contains("key") || !field["key"].is_string() || !field.contains("value")) {
+                        continue;
+                    }
+                    if (field["key"].get<std::string>() != "load.gpuSplitConfig") {
+                        continue;
+                    }
+                    if (common_lmstudio_extract_gpu_split(field["value"], custom_ratio, experimental_tensor_internal)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+
+        if (try_backend_entries(true) || try_backend_entries(false)) {
+            return true;
+        }
+    } catch (const std::exception & e) {
+        LOG_WRN("LMSTUDIO_MTP_HARDWARE_CONFIG_B9596: failed to parse %s: %s\n", hardware_config_path.c_str(), e.what());
+    }
+
+    return false;
+}
+
+static bool common_lmstudio_has_user_tensor_split(const common_params & params) {
+    for (size_t i = 0; i < llama_max_devices(); ++i) {
+        if (params.tensor_split[i] > 0.0f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool common_lmstudio_apply_hardware_config_split_if_missing(common_params & params, bool & experimental_tensor_internal) {
+    experimental_tensor_internal = false;
+    if (common_lmstudio_has_user_tensor_split(params)) {
+        return false;
+    }
+
+    std::vector<float> custom_ratio;
+    if (!common_lmstudio_read_hardware_config_split(custom_ratio, experimental_tensor_internal)) {
+        return false;
+    }
+
+    std::fill(params.tensor_split, params.tensor_split + 128, 0.0f);
+    const size_t n = std::min(custom_ratio.size(), (size_t) 128);
+    for (size_t i = 0; i < n; ++i) {
+        params.tensor_split[i] = custom_ratio[i];
+    }
+    return true;
+}
+
+static const char * common_lmstudio_split_mode_name(enum llama_split_mode split_mode) {
+    switch (split_mode) {
+        case LLAMA_SPLIT_MODE_NONE:   return "none";
+        case LLAMA_SPLIT_MODE_LAYER:  return "layer";
+        case LLAMA_SPLIT_MODE_ROW:    return "row";
+        case LLAMA_SPLIT_MODE_TENSOR: return "tensor";
+    }
+    return "unknown";
+}
+
+static std::string common_lmstudio_tensor_split_to_string(const common_params & params) {
+    std::ostringstream ss;
+    bool first = true;
+    for (size_t i = 0; i < llama_max_devices(); ++i) {
+        if (params.tensor_split[i] <= 0.0f) {
+            continue;
+        }
+        if (!first) {
+            ss << ",";
+        }
+        ss << params.tensor_split[i];
+        first = false;
+    }
+    return first ? "unset" : ss.str();
+}
+
+static std::string common_gemma4_mtp_profile() {
+    const std::string profile = common_lmstudio_env_lower("LMSTUDIO_GEMMA4_MTP_PROFILE");
+    if (profile == "fast-cache" || profile == "fast_cache") {
+        return "fast-cache";
+    }
+    if (profile == "stable-no-cache" || profile == "stable_no_cache" ||
+        profile == "no-cache"        || profile == "no_cache") {
+        return "stable-no-cache";
+    }
+
+    return "stable-cache";
+}
+
+static void common_gemma4_mtp_apply_target_split_defaults(common_params & params) {
+    params.split_mode = LLAMA_SPLIT_MODE_LAYER;
+    if (params.tensor_split[0] > 0.0f && params.tensor_split[1] > 0.0f) {
+        return;
+    }
+
+    std::fill(params.tensor_split, params.tensor_split + 128, 0.0f);
+    params.tensor_split[0] = 9.0f;
+    params.tensor_split[1] = 6.0f;
+}
+
+static const char * common_gemma4_mtp_apply_auto_load_profile(common_params & params) {
+    if (std::getenv("LMSTUDIO_GEMMA4_MTP_KEEP_LOAD_PROFILE") != nullptr) {
+        return "caller";
+    }
+
+    constexpr int32_t default_n_batch  = 2048;
+    constexpr int32_t default_n_ubatch = 512;
+    const bool caller_batch  = params.n_batch  != default_n_batch;
+    const bool caller_ubatch = params.n_ubatch != default_n_ubatch;
+
+    if (!caller_batch) {
+        params.n_batch = 256;
+    }
+    if (!caller_ubatch) {
+        params.n_ubatch = std::min(params.n_batch, 256);
+    } else if (params.n_ubatch > params.n_batch) {
+        params.n_ubatch = params.n_batch;
+    }
+
+    params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+
+    return caller_batch || caller_ubatch ? "caller" : "auto";
+}
+
+static const char * common_gemma4_mtp_apply_thread_profile(common_params & params) {
+    if (std::getenv("LMSTUDIO_GEMMA4_MTP_KEEP_THREADS") != nullptr) {
+        return "caller";
+    }
+
+    int n_threads = 8;
+    common_lmstudio_getenv_int("LMSTUDIO_GEMMA4_MTP_THREADS", n_threads);
+    if (n_threads <= 0) {
+        n_threads = 8;
+    }
+
+    params.cpuparams.n_threads = n_threads;
+    params.cpuparams_batch.n_threads = n_threads;
+    params.speculative.draft.cpuparams.n_threads = n_threads;
+    params.speculative.draft.cpuparams_batch.n_threads = n_threads;
+
+    return "gemma4-default";
+}
+
+static void common_gemma4_mtp_apply_draft_ngl_default(common_params & params) {
+    if (std::getenv("LMSTUDIO_GEMMA4_MTP_KEEP_DRAFT_NGL") != nullptr) {
+        return;
+    }
+
+    if (params.speculative.draft.n_gpu_layers == -1) {
+        params.speculative.draft.n_gpu_layers = -2;
+    }
+}
+
+static std::string common_gemma4_mtp_apply_draft_tensor_overrides(common_params & params) {
+    constexpr const char * default_overrides =
+        "(mtp_pre_proj|mtp\\.pre_projection|nextn\\.pre_projection)\\.weight=CUDA1,token_embd\\.weight=CUDA1";
+
+    const char * env_overrides = std::getenv("LMSTUDIO_GEMMA4_MTP_DRAFT_OVERRIDE_TENSOR");
+    const std::string overrides =
+        env_overrides != nullptr && env_overrides[0] != '\0' ? env_overrides : default_overrides;
+
+    params.speculative.draft.tensor_buft_overrides.clear();
+    parse_tensor_buffer_overrides(overrides, params.speculative.draft.tensor_buft_overrides);
+    return overrides;
+}
+
+static ggml_type common_qwen36_mtp_select_tensor_internal_kv_type(const common_params & params, bool & explicit_q4) {
+    explicit_q4 = false;
+
+    const std::string env = common_lmstudio_env_lower("LMSTUDIO_QWEN_MTP_TENSOR_INTERNAL_KV");
+    if (env == "q4" || env == "q4_0") {
+        explicit_q4 = true;
+        return GGML_TYPE_Q4_0;
+    }
+    if (env == "q8" || env == "q8_0") {
+        return GGML_TYPE_Q8_0;
+    }
+
+    if (params.cache_type_k == GGML_TYPE_Q4_0 && params.cache_type_v == GGML_TYPE_Q4_0) {
+        explicit_q4 = true;
+        return GGML_TYPE_Q4_0;
+    }
+    if (params.cache_type_k == GGML_TYPE_Q8_0 && params.cache_type_v == GGML_TYPE_Q8_0) {
+        return GGML_TYPE_Q8_0;
+    }
+
+    return GGML_TYPE_Q8_0;
+}
+
+static void common_qwen36_mtp_apply_lmstudio_auto(common_params & params) {
+    if (std::getenv("LMSTUDIO_QWEN_MTP_AUTO_DISABLE") != nullptr) {
+        return;
+    }
+    if (!common_qwen36_is_model(params)) {
+        return;
+    }
+
+    bool hardware_config_experimental_tensor_internal = false;
+    std::vector<float> custom_ratio;
+    const bool hardware_config_read =
+        common_lmstudio_read_hardware_config_split(custom_ratio, hardware_config_experimental_tensor_internal);
+
+    bool explicit_q4 = false;
+    const ggml_type kv_type = common_qwen36_mtp_select_tensor_internal_kv_type(params, explicit_q4);
+    const bool tensor_internal_already_requested =
+        params.split_mode == LLAMA_SPLIT_MODE_TENSOR &&
+        params.cache_type_k == kv_type &&
+        params.cache_type_v == kv_type &&
+        params.kv_unified;
+
+    if (!hardware_config_experimental_tensor_internal && !tensor_internal_already_requested) {
+        return;
+    }
+
+    const bool argv_tensor_split = common_lmstudio_has_user_tensor_split(params);
+    if (!argv_tensor_split && hardware_config_read && !custom_ratio.empty()) {
+        std::fill(params.tensor_split, params.tensor_split + 128, 0.0f);
+        const size_t n = std::min(custom_ratio.size(), (size_t) 128);
+        for (size_t i = 0; i < n; ++i) {
+            params.tensor_split[i] = custom_ratio[i];
+        }
+    }
+
+    params.split_mode   = LLAMA_SPLIT_MODE_TENSOR;
+    params.cache_type_k = kv_type;
+    params.cache_type_v = kv_type;
+    params.kv_unified   = true;
+    params.speculative.draft.cache_type_k = kv_type;
+    params.speculative.draft.cache_type_v = kv_type;
+    params.speculative.draft.backend_sampling = false;
+
+    if (params.tensor_split[0] <= 0.0f || params.tensor_split[1] <= 0.0f) {
+        std::fill(params.tensor_split, params.tensor_split + 128, 0.0f);
+        params.tensor_split[0] = 9.0f;
+        params.tensor_split[1] = 6.0f;
+    }
+
+    const bool keep_reasoning = std::getenv("LMSTUDIO_QWEN_MTP_KEEP_REASONING") != nullptr;
+    if (!keep_reasoning) {
+        params.enable_reasoning = 0;
+        params.default_template_kwargs["enable_thinking"] = "false";
+    }
+
+    const char * split_source = argv_tensor_split ? "argv" : (hardware_config_read ? "hardware-config" : "default");
+    const std::string target_tensor_split = common_lmstudio_tensor_split_to_string(params);
+    const char * kv_name = ggml_type_name(kv_type);
+
+    if (!common_qwen36_mtp_is_model(params)) {
+        LOG_INF("LMSTUDIO_QWEN_MTP_AUTO_B9596: Tensor/Internal requested, split_mode=%s tensor_split=%s split_source=%s native MTP not auto-enabled for non-MTP Qwen model, reasoning=%s target_kv=%s/%s kv_unified=on backend_sampling=off-tensor-split policy=%s\n",
+                common_lmstudio_split_mode_name(params.split_mode),
+                target_tensor_split.c_str(),
+                split_source,
+                keep_reasoning ? "preserved" : "off-by-default",
+                kv_name,
+                kv_name,
+                explicit_q4 ? "q4" : "q8");
+        return;
+    }
+
+    if (common_lmstudio_has_explicit_spec(params)) {
+        LOG_INF("LMSTUDIO_QWEN_MTP_AUTO_B9596: Tensor/Internal requested, split_mode=%s tensor_split=%s split_source=%s preserving explicit speculative setting, reasoning=%s target_kv=%s/%s draft_kv=%s/%s kv_unified=on backend_sampling=off-tensor-split policy=%s\n",
+                common_lmstudio_split_mode_name(params.split_mode),
+                target_tensor_split.c_str(),
+                split_source,
+                keep_reasoning ? "preserved" : "off-by-default",
+                kv_name,
+                kv_name,
+                kv_name,
+                kv_name,
+                explicit_q4 ? "q4" : "q8");
+        return;
+    }
+
+    params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+    params.speculative.draft.n_max = 2;
+    params.speculative.draft.n_min = 0;
+    params.speculative.draft.p_min = 0.0f;
+
+    LOG_INF("LMSTUDIO_QWEN_MTP_AUTO_B9596: Tensor/Internal requested, split_mode=%s tensor_split=%s split_source=%s native draft-mtp enabled draft_kv=%s/%s n_max=2 p_min=0 reasoning=%s target_kv=%s/%s kv_unified=on backend_sampling=off-tensor-split policy=%s\n",
+            common_lmstudio_split_mode_name(params.split_mode),
+            target_tensor_split.c_str(),
+            split_source,
+            kv_name,
+            kv_name,
+            keep_reasoning ? "preserved" : "off-by-default",
+            kv_name,
+            kv_name,
+            explicit_q4 ? "q4" : "q8");
+}
+
+static void common_gemma4_mtp_apply_lmstudio_auto_attach(common_params & params) {
+    if (std::getenv("LMSTUDIO_GEMMA4_MTP_AUTO_DISABLE") != nullptr) {
+        return;
+    }
+    if (!common_gemma4_mtp_is_lmstudio_mtp_model_key(params)) {
+        return;
+    }
+
+    const bool explicit_spec        = common_lmstudio_has_explicit_spec(params);
+    const bool explicit_draft_model = common_lmstudio_has_explicit_draft_model(params);
+    const bool explicit_spec_type   = common_lmstudio_has_explicit_spec_type(params);
+    bool auto_added_draft_mtp_type  = false;
+    const std::string profile_name = common_gemma4_mtp_profile();
+    const bool fast_cache_profile = profile_name == "fast-cache";
+    const bool no_cache_profile   = profile_name == "stable-no-cache";
+
+    std::string assistant_source;
+    const std::string assistant_path = common_gemma4_mtp_default_assistant_path(assistant_source);
+    if (!explicit_spec && !common_lmstudio_file_exists(assistant_path)) {
+        LOG_WRN("LMSTUDIO_GEMMA4_MTP_AUTO_B9596: assistant GGUF missing, leaving speculative decoding disabled: %s\n",
+                assistant_path.c_str());
+        return;
+    }
+
+    std::string target_remap_from;
+    const std::string matched_target = common_gemma4_mtp_matched_qat_target_path();
+    const bool target_remapped =
+        !matched_target.empty() &&
+        common_lmstudio_file_exists(matched_target) &&
+        std::getenv("LMSTUDIO_GEMMA4_MTP_KEEP_EXACT_TARGET") == nullptr &&
+        params.model.path != matched_target;
+
+    if (target_remapped) {
+        target_remap_from = params.model.path;
+        params.model.path = matched_target;
+        LOG_WRN("LMSTUDIO_GEMMA4_MTP_TARGET_REMAP_B9596: remapped Gemma4 MTP model key to matched Gemma4 QAT target for external assistant MTP; from=%s to=%s; set LMSTUDIO_GEMMA4_MTP_KEEP_EXACT_TARGET=1 to keep the original target\n",
+                target_remap_from.c_str(), matched_target.c_str());
+    }
+
+    if (!explicit_spec) {
+        params.speculative.draft.mparams.path = assistant_path;
+        params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+        params.speculative.draft.n_max = fast_cache_profile ? 4 : 2;
+        params.speculative.draft.n_min = 0;
+        params.speculative.draft.p_min = 0.0f;
+
+        int draft_n_max = 0;
+        if (common_lmstudio_getenv_int("LMSTUDIO_GEMMA4_MTP_DRAFT_N_MAX", draft_n_max)) {
+            params.speculative.draft.n_max = draft_n_max;
+        }
+    }
+    if (explicit_draft_model && !explicit_spec_type) {
+        params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+        params.speculative.draft.n_max = fast_cache_profile ? 4 : 2;
+        params.speculative.draft.n_min = 0;
+        params.speculative.draft.p_min = 0.0f;
+        auto_added_draft_mtp_type = true;
+
+        int draft_n_max = 0;
+        if (common_lmstudio_getenv_int("LMSTUDIO_GEMMA4_MTP_DRAFT_N_MAX", draft_n_max)) {
+            params.speculative.draft.n_max = draft_n_max;
+        }
+    }
+
+    common_gemma4_mtp_apply_draft_ngl_default(params);
+    params.speculative.draft.cache_type_k = GGML_TYPE_Q4_0;
+    params.speculative.draft.cache_type_v = GGML_TYPE_Q4_0;
+    params.speculative.draft.devices = parse_device_list("CUDA1");
+    const std::string draft_overrides = common_gemma4_mtp_apply_draft_tensor_overrides(params);
+
+    const bool argv_tensor_split = common_lmstudio_has_user_tensor_split(params);
+    bool hardware_config_experimental_tensor_internal = false;
+    const bool hardware_config_tensor_split =
+        common_lmstudio_apply_hardware_config_split_if_missing(params, hardware_config_experimental_tensor_internal);
+
+    params.cache_type_k = GGML_TYPE_Q4_0;
+    params.cache_type_v = GGML_TYPE_Q4_0;
+    common_gemma4_mtp_apply_target_split_defaults(params);
+
+    const char * batch_source = common_gemma4_mtp_apply_auto_load_profile(params);
+    const char * thread_source = common_gemma4_mtp_apply_thread_profile(params);
+    params.use_mmap = false;
+    params.enable_reasoning = 0;
+    params.default_template_kwargs["enable_thinking"] = "false";
+
+    if (no_cache_profile && std::getenv("LMSTUDIO_GEMMA4_MTP_KEEP_CONTEXT_CHECKPOINTS") == nullptr) {
+        int longctx_checkpoint_ctx_min = 65536;
+        common_lmstudio_getenv_int("LMSTUDIO_GEMMA4_MTP_LONGCTX_CHECKPOINT_CTX_MIN", longctx_checkpoint_ctx_min);
+
+        if (params.n_ctx >= longctx_checkpoint_ctx_min) {
+            params.n_ctx_checkpoints = std::max(params.n_ctx_checkpoints, 4);
+        } else {
+            params.n_ctx_checkpoints = 0;
+        }
+    }
+    if (no_cache_profile && std::getenv("LMSTUDIO_GEMMA4_MTP_KEEP_PROMPT_CACHE") == nullptr) {
+        params.cache_ram_mib = 0;
+        params.cache_prompt = false;
+        params.n_cache_reuse = 0;
+    }
+
+    params.kv_unified = false;
+    params.cpuparams.poll = 0;
+    params.cpuparams_batch.poll = 0;
+    params.speculative.draft.cpuparams.poll = 0;
+    params.speculative.draft.cpuparams_batch.poll = 0;
+
+    common_lmstudio_unsetenv("LLAMA_GEMMA4_MTP_ROW0_TARGET_ONLY_FALLBACK");
+    common_lmstudio_unsetenv("LLAMA_GEMMA4_MTP_ROW0_FALLBACK_MARGIN_MIN_MILLI");
+    common_lmstudio_unsetenv("LLAMA_GEMMA4_MTP_ROW0_FALLBACK_AFTER_DECODED");
+    common_lmstudio_setenv_if_empty("LLAMA_GEMMA4_MTP_CLEAR_KV_DATA_ON_FRESH_PROMPT", "1");
+
+    const char * split_source = argv_tensor_split ? "argv" : (hardware_config_tensor_split ? "hardware-config" : "default");
+    const std::string assistant_log_path =
+        explicit_draft_model ? params.speculative.draft.mparams.path : assistant_path;
+    const std::string assistant_log_source =
+        explicit_draft_model ? "explicit-draft-model" : (assistant_source.empty() ? "unknown" : assistant_source);
+
+    LOG_INF("LMSTUDIO_GEMMA4_MTP_AUTO_B9596: profile=%s attached draft-mtp assistant=%s assistant_source=%s explicit_draft=%d auto_added_draft_mtp_type=%d n_max=%d draft_device=CUDA1 draft_kv=q4_0/q4_0 draft_override=%s target_path=%s target_remap=%d target_split=layer target_tensor_split=%.6g,%.6g split_source=%s experimental_tensor_internal=%d tensor_internal_policy=not-for-gemma-q4 target_kv=q4_0/q4_0 kv_unified=off batch=%d ubatch=%d batch_source=%s threads=%d/%d thread_source=%s ctx_checkpoints=%d cache_ram=%d cache_prompt=%d flash_attn=on mmap=off reasoning=off poll=0\n",
+            profile_name.c_str(),
+            assistant_log_path.empty() ? "(explicit-non-path)" : assistant_log_path.c_str(),
+            assistant_log_source.c_str(),
+            explicit_draft_model ? 1 : 0,
+            auto_added_draft_mtp_type ? 1 : 0,
+            params.speculative.draft.n_max,
+            draft_overrides.c_str(),
+            params.model.path.c_str(),
+            target_remapped ? 1 : 0,
+            params.tensor_split[0],
+            params.tensor_split[1],
+            split_source,
+            hardware_config_experimental_tensor_internal ? 1 : 0,
+            params.n_batch,
+            params.n_ubatch,
+            batch_source,
+            params.cpuparams.n_threads,
+            params.cpuparams_batch.n_threads,
+            thread_source,
+            params.n_ctx_checkpoints,
+            params.cache_ram_mib,
+            params.cache_prompt ? 1 : 0);
+}
+
+static bool common_lmstudio_command_line_looks_like_lmstudio(int argc, char ** argv) {
+    bool has_api_key = false;
+    bool has_no_webui = false;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i] != nullptr ? argv[i] : "";
+        has_api_key = has_api_key || arg == "--api-key";
+        has_no_webui = has_no_webui || arg == "--no-webui";
+    }
+
+    return has_api_key && has_no_webui;
+}
+
+static void common_lmstudio_apply_log_verbosity_cap(common_params & params, int argc, char ** argv) {
+    if (!common_lmstudio_command_line_looks_like_lmstudio(argc, argv)) {
+        return;
+    }
+
+    if (std::getenv("LMSTUDIO_RUNTIME_KEEP_PROGRESS_LOGS") == nullptr) {
+        common_lmstudio_setenv_if_empty("LMSTUDIO_RUNTIME_SUPPRESS_PROGRESS_LOGS", "1");
+    }
+
+    if (params.verbosity <= LOG_LEVEL_INFO || std::getenv("LMSTUDIO_RUNTIME_KEEP_VERBOSE_LOGS") != nullptr) {
+        return;
+    }
+
+    const int requested_verbosity = params.verbosity;
+    params.verbosity = LOG_LEVEL_INFO;
+    common_log_set_verbosity_thold(params.verbosity);
+    LOG_INF("LMSTUDIO_RUNTIME_LOG_VERBOSITY_CAP_B9596: capped log verbosity from %d to %d; set LMSTUDIO_RUNTIME_KEEP_VERBOSE_LOGS=1 to keep debug token logs, LMSTUDIO_RUNTIME_KEEP_PROGRESS_LOGS=1 to keep progress timing logs\n",
+            requested_verbosity,
+            params.verbosity);
+}
+
 static bool common_params_parse_ex(int argc, char ** argv, common_params_context & ctx_arg) {
     common_params & params = ctx_arg.params;
 
@@ -625,6 +1538,11 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
         }
     }
 
+    common_lmstudio_apply_log_verbosity_cap(params, argc, argv);
+    common_qwen36_mtp_apply_lmstudio_auto(params);
+    common_gemma4_mtp_apply_lmstudio_auto_attach(params);
+    const std::string lmstudio_auto_model_path = params.model.path;
+
     postprocess_cpu_params(params.cpuparams,       nullptr);
     postprocess_cpu_params(params.cpuparams_batch, &params.cpuparams);
 
@@ -638,6 +1556,15 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     // handle model and download
     if (!skip_model_download) {
         common_params_handle_models(params, ctx_arg.ex);
+        if (params.model.path != lmstudio_auto_model_path) {
+            common_qwen36_mtp_apply_lmstudio_auto(params);
+            common_gemma4_mtp_apply_lmstudio_auto_attach(params);
+            postprocess_cpu_params(params.cpuparams,       nullptr);
+            postprocess_cpu_params(params.cpuparams_batch, &params.cpuparams);
+
+            postprocess_cpu_params(params.speculative.draft.cpuparams,       &params.cpuparams);
+            postprocess_cpu_params(params.speculative.draft.cpuparams_batch, &params.cpuparams_batch);
+        }
     }
 
     // model is required (except for server)

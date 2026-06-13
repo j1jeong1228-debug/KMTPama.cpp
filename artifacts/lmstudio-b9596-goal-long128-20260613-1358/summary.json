@@ -1,0 +1,27 @@
+﻿{
+    "timestamp":  "2026-06-13T13:57:58.0686094+09:00",
+    "artifact":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-goal-long128-20260613-1358",
+    "runtime":  "2.20.9596-gemma4-qwen-mtp-b9596-candidate",
+    "model":  "google/gemma-4-31b-qat",
+    "assistant":  "qat-q4",
+    "split":  "9,6",
+    "http":  200,
+    "prompt_tokens":  32244,
+    "completion_tokens":  160,
+    "eval_tok_s":  31.12,
+    "prompt_eval_ms":  39054.59,
+    "prompt_eval_tok_s":  825.61,
+    "acceptance":  0.77419,
+    "accepted":  96,
+    "generated":  124,
+    "finish_reason":  "length",
+    "content_note":  "Completion stayed in reasoning_content and hit max_tokens, but generation-length performance gate is valid.",
+    "pass":  {
+                 "long_28_plus":  true,
+                 "preferred_long_30_plus":  true,
+                 "draft_mtp_attached":  true,
+                 "assistant_source_qat_q4":  true,
+                 "target_tensor_split_9_6":  true,
+                 "stale_override_absent":  true
+             }
+}

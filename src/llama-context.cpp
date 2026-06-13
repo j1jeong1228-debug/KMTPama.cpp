@@ -15,6 +15,7 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 
@@ -28,6 +29,11 @@ static llm_graph_type ctx_type_to_graph_type(llama_context_type ctx_type) {
         case LLAMA_CONTEXT_TYPE_MTP    : return LLM_GRAPH_TYPE_DECODER_MTP;
     }
     throw std::runtime_error("Unsupported ctx type");
+}
+
+static bool gemma4_assistant_ctx_trace_enabled(const llama_model & model) {
+    return model.arch == LLM_ARCH_GEMMA4_ASSISTANT &&
+        std::getenv("LLAMA_GEMMA4_ASSISTANT_CTX_TRACE") != nullptr;
 }
 
 llama_context::llama_context(
@@ -45,6 +51,13 @@ llama_context::llama_context(
     t_load_us  = model.t_load_us;
 
     const auto & hparams = model.hparams;
+    const bool gemma4_assistant_ctx_trace = gemma4_assistant_ctx_trace_enabled(model);
+
+    if (gemma4_assistant_ctx_trace) {
+        LLAMA_LOG_WARN("%s: GEMMA4_ASSISTANT_CTX_TRACE enter ctx_type=%d n_layer_all=%u n_layer=%u n_layer_nextn=%u n_embd=%u n_embd_backbone=%u\n",
+                __func__, (int) params.ctx_type, hparams.n_layer_all, hparams.n_layer(),
+                hparams.n_layer_nextn, hparams.n_embd, hparams.n_embd_backbone);
+    }
 
     cparams.n_seq_max = std::max(1u, params.n_seq_max);
     if (cparams.n_seq_max > LLAMA_MAX_SEQ) {
@@ -95,6 +108,11 @@ llama_context::llama_context(
         }
 
         cparams.ctx_other = params.ctx_other;
+    }
+
+    if (gemma4_assistant_ctx_trace) {
+        LLAMA_LOG_WARN("%s: GEMMA4_ASSISTANT_CTX_TRACE after ctx_other ctx_other=%p\n",
+                __func__, (void *) cparams.ctx_other);
     }
 
     // Initialize backend samplers here so they are part of the sampling graph
@@ -321,6 +339,11 @@ llama_context::llama_context(
         memory.reset(model.create_memory(params_mem, cparams));
     }
 
+    if (gemma4_assistant_ctx_trace) {
+        LLAMA_LOG_WARN("%s: GEMMA4_ASSISTANT_CTX_TRACE after create_memory memory=%p\n",
+                __func__, (void *) memory.get());
+    }
+
     // init backends
     if (!hparams.vocab_only) {
         LLAMA_LOG_DEBUG("%s: enumerating backends\n", __func__);
@@ -430,6 +453,7 @@ void llama_context::sched_reserve() {
     }
 
     sched_need_reserve = false;
+    const bool gemma4_assistant_ctx_trace = gemma4_assistant_ctx_trace_enabled(model);
 
     LLAMA_LOG_INFO("%s: reserving ...\n", __func__);
 
@@ -448,6 +472,11 @@ void llama_context::sched_reserve() {
     gf_res_reserve.reset(new llm_graph_result(max_nodes));
 
     sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, cparams.pipeline_parallel, cparams.op_offload));
+
+    if (gemma4_assistant_ctx_trace) {
+        LLAMA_LOG_WARN("%s: GEMMA4_ASSISTANT_CTX_TRACE after sched_new n_backends=%zu max_nodes=%zu\n",
+                __func__, backend_ptrs.size(), max_nodes);
+    }
 
     llama_memory_context_ptr mctx;
     if (memory) {
@@ -615,6 +644,11 @@ void llama_context::sched_reserve() {
         n_nodes_pp  = ggml_graph_n_nodes(gf);
     }
 
+    if (gemma4_assistant_ctx_trace) {
+        LLAMA_LOG_WARN("%s: GEMMA4_ASSISTANT_CTX_TRACE after reserve_pp splits=%d nodes=%d\n",
+                __func__, n_splits_pp, n_nodes_pp);
+    }
+
     // reserve with tg (token generation) graph to get the number of splits and nodes
     {
         auto * gf = graph_reserve(n_seqs, n_seqs, n_seqs, mctx.get(), model.hparams.no_alloc);
@@ -624,6 +658,11 @@ void llama_context::sched_reserve() {
 
         n_splits_tg = ggml_backend_sched_get_n_splits(sched.get());
         n_nodes_tg  = ggml_graph_n_nodes(gf);
+    }
+
+    if (gemma4_assistant_ctx_trace) {
+        LLAMA_LOG_WARN("%s: GEMMA4_ASSISTANT_CTX_TRACE after reserve_tg splits=%d nodes=%d\n",
+                __func__, n_splits_tg, n_nodes_tg);
     }
 
     // reserve again with pp graph to avoid ggml-alloc reallocations during inference
@@ -3461,7 +3500,8 @@ llama_context * llama_init_from_model(
     }
 
     if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
-        model->hparams.n_layer_nextn == 0) {
+        model->hparams.n_layer_nextn == 0 &&
+        model->arch != LLM_ARCH_GEMMA4_ASSISTANT) {
         LLAMA_LOG_WARN("%s: context type MTP requested but model doesn't contain MTP layers\n", __func__);
         return nullptr;
     }

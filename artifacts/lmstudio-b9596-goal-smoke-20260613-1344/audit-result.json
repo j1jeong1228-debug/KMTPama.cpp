@@ -1,0 +1,35 @@
+﻿{
+    "timestamp":  "2026-06-13T13:45:38.1959342+09:00",
+    "verdict":  "pass-smoke-current-lmstudio-config",
+    "runtimeExe":  "C:\\Users\\berje\\.lmstudio\\extensions\\backends\\llama.cpp-win-x86_64-nvidia-cuda-avx2-2.20.9596-gemma4-qwen-mtp-b9596-candidate\\llama-server.exe",
+    "serverLog":  "C:\\Users\\berje\\.lmstudio\\server-logs\\2026-06\\2026-06-13.1.log",
+    "artifactDir":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-goal-smoke-20260613-1344",
+    "modelIdentifier":  "gemma-b9596-qat-smoke",
+    "lmstudioModelKey":  "google/gemma-4-31b-qat",
+    "requestedVariantNote":  "CLI rejected google/gemma-4-31b-qat@q4_0; runtime remapped selected IQ4_XS model path to QAT-Q4_0 target internally.",
+    "commandLine":  "C:\\Users\\berje\\.lmstudio\\extensions\\backends\\llama.cpp-win-x86_64-nvidia-cuda-avx2-2.20.9596-gemma4-qwen-mtp-b9596-candidate\\llama-server.exe --model C:\\Users\\berje\\.lmstudio\\models\\lmstudio-community\\gemma-4-31B-it-QAT-GGUF\\gemma-4-31B-Queen-it-qat-q4_0-unquantized.i1-IQ4_XS.gguf --host 127.0.0.1 --port 8929 --api-key <redacted> --no-webui --jinja --verbosity 10 --ctx-size 65536 --batch-size 512 --n-gpu-layers 999999 --n-cpu-moe 0 --main-gpu 0 --threads 12 --parallel 1 --tensor-split 0 --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn auto --kv-offload --kv-unified --no-direct-io --no-mmap",
+    "hardwareConfig":  "C:\\Users\\berje\\.lmstudio\\.internal\\hardware-config.json",
+    "staleOverrideExists":  false,
+    "qwenTensorInternalPreserved":  true,
+    "attachEvidence":  {
+                           "assistantSourceQatQ4":  true,
+                           "targetTensorSplit96":  true,
+                           "draftMtp":  true,
+                           "q4Kv":  true,
+                           "tensorInternalNotForGemmaQ4":  true,
+                           "excessiveVerboseCap":  true
+                       },
+    "smoke":  {
+                  "httpCode":  200,
+                  "content":  "OK-QAT-MTP",
+                  "evalTokS":  40.38,
+                  "acceptance":  0.83333,
+                  "acceptedDraftTokens":  40,
+                  "generatedDraftTokens":  48,
+                  "promptTokens":  33,
+                  "completionTokens":  65,
+                  "responsePath":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\lmstudio-b9596-goal-smoke-20260613-1344\\response-128.raw.txt",
+                  "timingLine":  "501:1.29.603.585 I slot print_timing: id  0 | task 15 |        eval time =    1609.72 ms /    65 tokens (   24.76 ms per token,    40.38 tokens per second)",
+                  "acceptanceLine":  "504:1.29.603.590 I slot print_timing: id  0 | task 15 | draft acceptance = 0.83333 (   40 accepted /    48 generated)"
+              }
+}

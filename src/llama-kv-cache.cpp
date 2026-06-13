@@ -1237,7 +1237,18 @@ uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
 }
 
 ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
-    const int32_t ikv = map_layer_ids.at(il);
+    auto it = map_layer_ids.find(il);
+    if (it == map_layer_ids.end()) {
+        std::string present;
+        for (const auto & entry : map_layer_ids) {
+            if (!present.empty()) {
+                present += ",";
+            }
+            present += std::to_string(entry.first);
+        }
+        throw std::runtime_error(format("KV cache missing K layer mapping for il=%d, present=[%s]", il, present.c_str()));
+    }
+    const int32_t ikv = it->second;
 
     auto * k = layers[ikv].k;
 
@@ -1257,7 +1268,18 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
 }
 
 ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
-    const int32_t ikv = map_layer_ids.at(il);
+    auto it = map_layer_ids.find(il);
+    if (it == map_layer_ids.end()) {
+        std::string present;
+        for (const auto & entry : map_layer_ids) {
+            if (!present.empty()) {
+                present += ",";
+            }
+            present += std::to_string(entry.first);
+        }
+        throw std::runtime_error(format("KV cache missing V layer mapping for il=%d, present=[%s]", il, present.c_str()));
+    }
+    const int32_t ikv = it->second;
 
     auto * v = layers[ikv].v;
 
@@ -1291,7 +1313,18 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
 ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {
     GGML_UNUSED(sinfo);
 
-    const int32_t ikv = map_layer_ids.at(il);
+    auto it = map_layer_ids.find(il);
+    if (it == map_layer_ids.end()) {
+        std::string present;
+        for (const auto & entry : map_layer_ids) {
+            if (!present.empty()) {
+                present += ",";
+            }
+            present += std::to_string(entry.first);
+        }
+        throw std::runtime_error(format("KV cache missing cpy K layer mapping for il=%d, present=[%s]", il, present.c_str()));
+    }
+    const int32_t ikv = it->second;
 
     ggml_tensor * k = layers[ikv].k;
 
@@ -1326,7 +1359,18 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
 ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const {
     GGML_UNUSED(sinfo);
 
-    const int32_t ikv = map_layer_ids.at(il);
+    auto it = map_layer_ids.find(il);
+    if (it == map_layer_ids.end()) {
+        std::string present;
+        for (const auto & entry : map_layer_ids) {
+            if (!present.empty()) {
+                present += ",";
+            }
+            present += std::to_string(entry.first);
+        }
+        throw std::runtime_error(format("KV cache missing cpy V layer mapping for il=%d, present=[%s]", il, present.c_str()));
+    }
+    const int32_t ikv = it->second;
 
     auto * v = layers[ikv].v;
 
