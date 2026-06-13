@@ -68,6 +68,25 @@ Important log evidence:
 - `common_speculative_impl_draft_mtp: adding speculative implementation 'draft-mtp'`
 - `tensor_internal_policy=not-for-gemma-q4`
 
+## Final Cleanup Verification
+
+Final reversible cleanup was performed on 2026-06-13.
+
+- Cleanup manifest: `artifacts/_trash/b9596-final-cleanup-20260613-150433/CLEANUP-MANIFEST.json`
+- Verification summary: `artifacts/_trash/b9596-final-cleanup-20260613-150433/VERIFY-SUMMARY.json`
+- Moved to trash: `285` items, `50.424 GiB`
+- Repo raw artifacts moved: `262` files
+- Old custom runtimes moved: `14`
+- Old/stub models moved: `9`
+- Restore needed: `false`
+
+Post-cleanup smoke results:
+
+- Gemma4 QAT 9/6: pass, HTTP `200`, content `OK-QAT-MTP`, `36.52 tok/s`, acceptance `0.81429`
+- Gemma4 attach evidence: `assistant_source=hardware-config-qat-q4`, `target_tensor_split=9,6`, `target_kv=q4_0/q4_0`, `draft-mtp`, `tensor_internal_policy=not-for-gemma-q4`
+- Qwen Tensor/Internal/native MTP: pass, HTTP `200`, content `OK-QWEN-MTP`, `40.20 tok/s`, acceptance `1.00000`
+- Target-only Qwen2 control: pass, HTTP `200`, non-empty content, `common_speculative_init: no implementations specified`, no `draft-mtp`
+
 ## LM Studio Command Line Caveat
 
 The OS process command line still shows LM Studio's original arguments, for example `--tensor-split 0`, `--threads 12`, and the selected IQ4_XS model path. The b9596 runtime then reads LM Studio internal config and rewrites the effective Gemma4 attached MTP path internally.

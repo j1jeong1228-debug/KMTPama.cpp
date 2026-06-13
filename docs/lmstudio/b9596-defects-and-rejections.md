@@ -143,3 +143,12 @@ Retain:
 - `artifacts/lmstudio-b9596-qwen-native-q8-q4-001`
 - `artifacts/lmstudio-b9596-targetonly-qwen2-smoke-001`
 - `scripts/compare-lmstudio-gemma-qat-assistants-curl.ps1`
+
+Final cleanup performed:
+
+- Manifest: `artifacts/_trash/b9596-final-cleanup-20260613-150433/CLEANUP-MANIFEST.json`
+- Verification summary: `artifacts/_trash/b9596-final-cleanup-20260613-150433/VERIFY-SUMMARY.json`
+- Moved `262` ignored raw repo artifact files, `14` superseded custom runtimes, and `9` old/stub model directories.
+- Total moved size: `50.424 GiB`.
+- Active b9596 runtime, Gemma4 QAT target, Gemma4 QAT assistant, Qwen validation models, and target-only smoke model were protected.
+- Post-cleanup Gemma/Qwen/target-only smoke passed, so no restore was required.

@@ -46,6 +46,8 @@ Small evidence summaries only:
 - `artifacts/lmstudio-b9596-qwen-native-q8-q4-001/summary.json`
 - `artifacts/lmstudio-b9596-targetonly-qwen2-smoke-001/summary.json`
 - `artifacts/_trash/b9596-cleanup-20260613-134909/TRASH-MANIFEST.json`
+- `artifacts/_trash/b9596-final-cleanup-20260613-150433/CLEANUP-MANIFEST.json`
+- `artifacts/_trash/b9596-final-cleanup-20260613-150433/VERIFY-SUMMARY.json`
 
 ## Do Not Commit
 

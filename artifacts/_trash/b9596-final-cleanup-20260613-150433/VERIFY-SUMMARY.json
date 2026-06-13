@@ -1,0 +1,45 @@
+﻿{
+    "timestamp":  "2026-06-13T15:12:58.3311849+09:00",
+    "verdict":  "pass-no-restore-needed",
+    "cleanupManifest":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-final-cleanup-20260613-150433\\CLEANUP-MANIFEST.json",
+    "moved":  {
+                  "movedCount":  285,
+                  "movedBytes":  54142752661,
+                  "movedGB":  50.424,
+                  "repoMovedFiles":  262,
+                  "runtimeMovedCount":  14,
+                  "modelMovedCount":  9
+              },
+    "restoreNeeded":  false,
+    "smoke":  {
+                  "gemmaQat":  {
+                                   "verdict":  "pass",
+                                   "httpCode":  200,
+                                   "content":  "OK-QAT-MTP",
+                                   "evalTokS":  36.52,
+                                   "acceptance":  0.81429,
+                                   "assistantSourceQatQ4":  true,
+                                   "targetTensorSplit96":  true,
+                                   "q4Kv":  true,
+                                   "draftMtp":  true,
+                                   "tensorInternalNotForGemmaQ4":  true
+                               },
+                  "qwen":  {
+                               "verdict":  "pass",
+                               "httpCode":  "200",
+                               "content":  "OK-QWEN-MTP",
+                               "evalTokS":  40.2,
+                               "acceptance":  1,
+                               "draftMtp":  true,
+                               "tensorInternalMention":  true
+                           },
+                  "targetOnly":  {
+                                     "verdict":  "pass",
+                                     "httpCode":  "200",
+                                     "contentNonEmpty":  true,
+                                     "evalTokS":  199.29,
+                                     "draftMtpInTargetOnlySegment":  false,
+                                     "noSpecImpl":  true
+                                 }
+              }
+}
