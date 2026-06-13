@@ -160,3 +160,15 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+
+# Local LM Studio / b9596 benchmark artifacts
+/artifacts/**
+!/artifacts/
+!/artifacts/**/
+!/artifacts/lmstudio-b9596-gemma-qat-assistant-selected-q4-summary.json
+!/artifacts/lmstudio-b9596-goal-smoke-20260613-1344/audit-result.json
+!/artifacts/lmstudio-b9596-goal-short-long-short-20260613-1354/summary.json
+!/artifacts/lmstudio-b9596-goal-long128-20260613-1358/summary.json
+!/artifacts/lmstudio-b9596-qwen-native-q8-q4-001/summary.json
+!/artifacts/lmstudio-b9596-targetonly-qwen2-smoke-001/summary.json
+!/artifacts/_trash/b9596-cleanup-20260613-134909/TRASH-MANIFEST.json
