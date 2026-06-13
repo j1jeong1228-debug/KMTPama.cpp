@@ -80,6 +80,14 @@ Final reversible cleanup was performed on 2026-06-13.
 - Old/stub models moved: `9`
 - Restore needed: `false`
 
+Recycle Bin correction:
+
+- The cleanup payloads were later sent to the Windows Recycle Bin.
+- Confirmed in Recycle Bin: repo raw artifact payload and old custom runtime payload.
+- Not confirmed in Recycle Bin: the old/stub model payload. `SendToRecycleBin` returned without exception, but no Recycle Bin metadata was created for the `52.31 GiB` model payload. This likely exceeded the configured Recycle Bin capacity.
+- Required active models remained present after this correction: Gemma4 QAT target, Gemma4 QAT assistant, Qwen validation models, and target-only smoke model.
+- `CLEANUP-MANIFEST.json` now records Recycle Bin restore commands for recoverable payloads and marks model entries as not restore-available from the Recycle Bin.
+
 Post-cleanup smoke results:
 
 - Gemma4 QAT 9/6: pass, HTTP `200`, content `OK-QAT-MTP`, `36.52 tok/s`, acceptance `0.81429`

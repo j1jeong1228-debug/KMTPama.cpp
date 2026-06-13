@@ -36,6 +36,7 @@ Documentation:
 Utility script:
 
 - `scripts/compare-lmstudio-gemma-qat-assistants-curl.ps1`
+- `scripts/restore-b9596-final-cleanup-from-recycle-bin.ps1`
 
 Small evidence summaries only:
 

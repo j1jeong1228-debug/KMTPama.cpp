@@ -41,5 +41,56 @@
                                      "draftMtpInTargetOnlySegment":  false,
                                      "noSpecImpl":  true
                                  }
-              }
+              },
+    "windowsRecycleBin":  {
+                              "sentToWindowsRecycleBin":  "partial",
+                              "sentAt":  "2026-06-13T18:57:56.6933044+09:00",
+                              "confirmedPayloadRootCount":  2,
+                              "payloadRootCount":  3,
+                              "payloadRoots":  [
+                                                   {
+                                                       "category":  "repo-artifact-payload-root",
+                                                       "path":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-final-cleanup-20260613-150433\\repo-artifacts",
+                                                       "deletedFrom":  "C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-final-cleanup-20260613-150433",
+                                                       "name":  "repo-artifacts",
+                                                       "sentToRecycleBin":  true,
+                                                       "sentAt":  "2026-06-13T18:57:56.6933044+09:00",
+                                                       "existsAfterRecycle":  false,
+                                                       "recycleBinMatches":  1,
+                                                       "recycleBinPath":  "C:\\$Recycle.Bin\\S-1-5-21-153129567-1343287152-4185832175-1001\\$RPPPC8D",
+                                                       "dateDeleted":  "\/Date(1781312251000)\/",
+                                                       "status":  "confirmed-in-windows-recycle-bin"
+                                                   },
+                                                   {
+                                                       "category":  "runtime-payload-root",
+                                                       "path":  "C:\\Users\\berje\\.lmstudio\\runtime-trash\\b9596-final-cleanup-20260613-150433",
+                                                       "deletedFrom":  "C:\\Users\\berje\\.lmstudio\\runtime-trash",
+                                                       "name":  "b9596-final-cleanup-20260613-150433",
+                                                       "sentToRecycleBin":  true,
+                                                       "sentAt":  "2026-06-13T18:57:56.6933044+09:00",
+                                                       "existsAfterRecycle":  false,
+                                                       "recycleBinMatches":  1,
+                                                       "recycleBinPath":  "C:\\$Recycle.Bin\\S-1-5-21-153129567-1343287152-4185832175-1001\\$RB3K5N3",
+                                                       "dateDeleted":  "\/Date(1781312252000)\/",
+                                                       "status":  "confirmed-in-windows-recycle-bin"
+                                                   },
+                                                   {
+                                                       "category":  "model-payload-root",
+                                                       "path":  "C:\\Users\\berje\\.lmstudio\\model-trash\\b9596-final-cleanup-20260613-150433",
+                                                       "deletedFrom":  "C:\\Users\\berje\\.lmstudio\\model-trash",
+                                                       "name":  "b9596-final-cleanup-20260613-150433",
+                                                       "sentToRecycleBin":  true,
+                                                       "sentAt":  "2026-06-13T18:57:56.6933044+09:00",
+                                                       "existsAfterRecycle":  false,
+                                                       "recycleBinMatches":  0,
+                                                       "recycleBinPath":  null,
+                                                       "dateDeleted":  null,
+                                                       "status":  "not-found-in-windows-recycle-bin-after-send",
+                                                       "note":  "Windows FileSystem.DeleteDirectory(...SendToRecycleBin) returned without exception, but no Recycle Bin $I/$R metadata was created for this 52.31 GiB model payload. Observed C: Recycle Bin MaxCapacity entries include 49740 MB, below the payload size, so Windows likely bypassed the Recycle Bin for this oversized directory. Required b9596 Gemma/Qwen models were not in this payload and remain present."
+                                                   }
+                                               ],
+                              "restoreAllCommand":  "powershell -ExecutionPolicy Bypass -File \u0027C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\scripts\\restore-b9596-final-cleanup-from-recycle-bin.ps1\u0027 -Manifest \u0027C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-final-cleanup-20260613-150433\\CLEANUP-MANIFEST.json\u0027",
+                              "restorePayloadsCommand":  "powershell -ExecutionPolicy Bypass -File \u0027C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\scripts\\restore-b9596-final-cleanup-from-recycle-bin.ps1\u0027 -Manifest \u0027C:\\Users\\berje\\src\\llama.cpp-b9596-gemma4-qwen-mtp-runtime\\artifacts\\_trash\\b9596-final-cleanup-20260613-150433\\CLEANUP-MANIFEST.json\u0027 -PayloadOnly"
+                          },
+    "postRecycleRisk":  "model-payload-not-retained-in-windows-recycle-bin; required active models verified present"
 }

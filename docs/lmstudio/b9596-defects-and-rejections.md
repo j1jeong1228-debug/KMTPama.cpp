@@ -152,3 +152,10 @@ Final cleanup performed:
 - Total moved size: `50.424 GiB`.
 - Active b9596 runtime, Gemma4 QAT target, Gemma4 QAT assistant, Qwen validation models, and target-only smoke model were protected.
 - Post-cleanup Gemma/Qwen/target-only smoke passed, so no restore was required.
+
+Recycle Bin correction:
+
+- Repo artifact payload and runtime payload were confirmed in the Windows Recycle Bin.
+- Model payload was not confirmed in the Windows Recycle Bin after `SendToRecycleBin`; the `52.31 GiB` payload likely exceeded Recycle Bin capacity and is not restore-available from the manifest.
+- Required active model directories were rechecked and remained present.
+- `scripts/restore-b9596-final-cleanup-from-recycle-bin.ps1` was added for recoverable Recycle Bin payload restoration.
